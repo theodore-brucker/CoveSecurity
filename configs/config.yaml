@@ -1,0 +1,19 @@
+data:
+  raw_path: C:\Users\theob\Code\Refactored MLSec\data\raw\data.txt
+  new_raw_path: C:\Users\theob\Code\Refactored MLSec\data\new_raw\new_data.txt
+  processed_path: C:\Users\theob\Code\Refactored MLSec\data\processed\processed_data.h5
+  new_processed_path: C:\Users\theob\Code\Refactored MLSec\data\new_processed\new_processed_data.h5
+model:
+  autoencoder_path: models/autoencoder/
+  trained_model_path: models/autoencoder/trained_models/autoencoder_model.h5
+
+training:
+  epochs: 5
+  batch_size: 4
+  validation_split: 0.2
+
+evaluation:
+  threshold: 0.05
+
+logging:
+  log_path: logs/
