@@ -20,7 +20,7 @@ def index():
 def consume_classifications():
     while True:
         try:
-            consumer = KafkaConsumer('predictions', bootstrap_servers='kafka:9092')
+            consumer = KafkaConsumer('raw_data', bootstrap_servers='kafka:9092')
             for message in consumer:
                 data = json.loads(message.value.decode('utf-8'))
                 socketio.emit('new_classification', data)

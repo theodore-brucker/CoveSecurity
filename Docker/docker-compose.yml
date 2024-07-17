@@ -8,22 +8,22 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
     networks:
-      kafka_network:
-        aliases:
-          - zookeeper
+      - kafka_network
 
   kafka:
     image: confluentinc/cp-kafka:latest
     ports:
       - "9092:9092"
-      - "29092:29092"
     environment:
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_LOG_RETENTION_HOURS: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_DELETE_TOPIC_ENABLE: 'true'
     depends_on:
       - zookeeper
     networks:
@@ -50,10 +50,8 @@ services:
       kafka-topics --bootstrap-server kafka:9092 --list
       "
     networks:
-      kafka_network:
-        aliases:
-          - init_kafka
-  
+      - kafka_network
+
   kafka_exporter:
     image: danielqsj/kafka-exporter:latest
     environment:
@@ -76,9 +74,7 @@ services:
       TS_CONFIG_FILE: /home/model-server/config.properties
     command: ["torchserve", "--start", "--model-store", "/home/model-server/model-store", "--models", "autoencoder=autoencoder.mar"]
     networks:
-      kafka_network:
-        aliases:
-          - torchserve
+      - kafka_network
 
   web:
     build: ./web
@@ -104,13 +100,13 @@ services:
   traffic_capture:
     build: ./traffic_capture
     environment:
-      - KAFKA_BROKER=localhost:29092
+      - KAFKA_BROKER=kafka:9092
       - KAFKA_TOPIC_RAW=network-traffic
       - CAPTURE_FILE=/mnt/capture/traffic.pcap
-      - NETWORK_MODE=host
-    network_mode: 'host'
     volumes:
       - C:\capture:/mnt/capture
+    networks:
+      - kafka_network
 
 networks:
   kafka_network:

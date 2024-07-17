@@ -5,7 +5,7 @@ import os
 import requests
 import logging
 from scapy.all import IP, TCP, ICMP, Ether, sniff
-from quixstreams import Application
+from confluent_kafka import Producer, Consumer, KafkaException, KafkaError
 from confluent_kafka.admin import AdminClient
 import threading
 import time
@@ -16,14 +16,25 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(message)s',
                     handlers=[logging.StreamHandler()])
 
-# Environment variable for Kafka broker
-KAFKA_BROKER = 'localhost:9092'
+KAFKA_BROKER = os.getenv('KAFKA_BROKER', 'kafka:9092')
+
+# Kafka Producer configuration
+producer_config = {
+    'bootstrap.servers': KAFKA_BROKER
+}
+
+# Kafka Consumer configuration
+consumer_config = {
+    'bootstrap.servers': KAFKA_BROKER,
+    'group.id': 'network_data',
+    'auto.offset.reset': 'earliest'
+}
 
 # Capture Network Traffic
 def packet_callback(packet):
     return packet
 
-def capture_network_traffic_from_file(file_path, app):
+def capture_network_traffic_from_file(file_path):
     while True:
         logging.info(f"Checking if capture file exists: {file_path}")
         if not os.path.exists(file_path):
@@ -36,7 +47,7 @@ def capture_network_traffic_from_file(file_path, app):
             packets = sniff(offline=file_path, count=10)
             if packets:
                 logging.info(f"Captured {len(packets)} packets")
-                produce_raw_data(app, packets)
+                produce_raw_data(packets)
             else:
                 logging.info("No packets captured. Sleeping before retrying...")
                 time.sleep(5)  # Wait before trying again
@@ -66,18 +77,19 @@ def serialize_packet(packet):
         return None
 
 # Produce Raw Data to Kafka
-def produce_raw_data(app, packets):
+def produce_raw_data(packets):
     logging.info("Producing raw data to Kafka")
+    producer = Producer(producer_config)
     try:
-        with app.get_producer() as producer:
-            for packet in packets:
-                serialized_packet = serialize_packet(packet)
-                if serialized_packet:
-                    producer.produce(
-                        topic="raw_data",
-                        key=str(packet.time),
-                        value=json.dumps(serialized_packet, cls=CustomEncoder)
-                    )
+        for packet in packets:
+            serialized_packet = serialize_packet(packet)
+            if serialized_packet:
+                producer.produce(
+                    topic="raw_data",
+                    key=str(packet.time),
+                    value=json.dumps(serialized_packet, cls=CustomEncoder)
+                )
+        producer.flush()
         logging.info("Finished producing raw data to Kafka")
     except Exception as e:
         logging.error(f"Failed to produce raw data: {e}")
@@ -140,45 +152,51 @@ def topic_exists(broker_address, topic_name):
         return False
 
 # Process Raw Data and Produce to Processed Data Topic
-def process_raw_data(app, broker_address):
+def process_raw_data(broker_address):
     logging.info("Starting to process raw data")
     while not topic_exists(broker_address, "raw_data"):
         logging.warning("raw_data topic not found. Sleeping for 10 seconds and retrying...")
         time.sleep(10)
     
+    consumer = Consumer(consumer_config)
     try:
-        with app.get_consumer() as consumer:
-            logging.info("Subscribing to raw_data topic")
-            consumer.subscribe(["raw_data"])
-            logging.info("Subscription to raw_data topic successful")
-            
-            with app.get_producer() as producer:
-                while True:
-                    msg = consumer.poll(10)  # Increase the poll timeout to 10 seconds
-                    if msg is None:
-                        continue
-                    elif msg.error() is not None:
-                        logging.error(f"Error consuming message: {msg.error()}")
-                    else:
-                        key = msg.key().decode("utf8")
-                        value = json.loads(msg.value())
-                        offset = msg.offset()
-                        partition = msg.partition()
+        logging.info("Subscribing to raw_data topic")
+        consumer.subscribe(["raw_data"])
+        logging.info("Subscription to raw_data topic successful")
+        
+        producer = Producer(producer_config)
+        while True:
+            msg = consumer.poll(10)  # Increase the poll timeout to 10 seconds
+            if msg is None:
+                continue
+            elif msg.error():
+                if msg.error().code() == KafkaError._PARTITION_EOF:
+                    continue
+                else:
+                    logging.error(f"Error consuming message: {msg.error()}")
+            else:
+                key = msg.key().decode("utf8")
+                value = json.loads(msg.value())
+                offset = msg.offset()
+                partition = msg.partition()
 
-                        try:
-                            processed_value = process_packet(value)
-                            if processed_value:
-                                producer.produce(
-                                    topic="processed_data",
-                                    key=key,
-                                    value=json.dumps(processed_value, cls=CustomEncoder),
-                                )
-                                consumer.store_offsets(msg)
-                        except Exception as e:
-                            logging.error(f"Failed to process packet: {e}")
+                try:
+                    processed_value = process_packet(value)
+                    if processed_value:
+                        producer.produce(
+                            topic="processed_data",
+                            key=key,
+                            value=json.dumps(processed_value, cls=CustomEncoder),
+                        )
+                        producer.flush()
+                        consumer.commit(msg)
+                except Exception as e:
+                    logging.error(f"Failed to process packet: {e}")
         logging.info("Finished processing raw data")
     except Exception as e:
         logging.error(f"Failed to process raw data: {e}")
+    finally:
+        consumer.close()
 
 # Query TorchServe Model
 def query_torchserve(data):
@@ -193,62 +211,67 @@ def query_torchserve(data):
         return None
 
 # Consume Processed Data, Query Model, and Produce Predictions
-def consume_processed_data_and_query_model(app, broker_address):
+def consume_processed_data_and_query_model(broker_address):
     logging.info("Starting to consume processed data and query model")
     while not topic_exists(broker_address, "processed_data"):
         logging.warning("processed_data topic not found. Sleeping for 10 seconds and retrying...")
         time.sleep(10)
     
+    consumer = Consumer(consumer_config)
     try:
-        with app.get_consumer() as consumer:
-            logging.info("Subscribing to processed_data topic")
-            consumer.subscribe(["processed_data"])
-            logging.info("Subscription to processed_data topic successful")
-            
-            with app.get_producer() as producer:
-                while True:
-                    msg = consumer.poll(10)  # Increase the poll timeout to 10 seconds
-                    if msg is None:
-                        continue
-                    elif msg.error() is not None:
-                        logging.error(f"Error consuming message: {msg.error()}")
-                    else:
-                        key = msg.key().decode("utf8")
-                        value = json.loads(msg.value())
-                        offset = msg.offset()
-                        partition = msg.partition()
+        logging.info("Subscribing to processed_data topic")
+        consumer.subscribe(["processed_data"])
+        logging.info("Subscription to processed_data topic successful")
+        
+        producer = Producer(producer_config)
+        while True:
+            msg = consumer.poll(10)  # Increase the poll timeout to 10 seconds
+            if msg is None:
+                continue
+            elif msg.error():
+                if msg.error().code() == KafkaError._PARTITION_EOF:
+                    continue
+                else:
+                    logging.error(f"Error consuming message: {msg.error()}")
+            else:
+                key = msg.key().decode("utf8")
+                value = json.loads(msg.value())
+                offset = msg.offset()
+                partition = msg.partition()
 
-                        model_response = query_torchserve(value)
-                        if model_response:
-                            producer.produce(
-                                topic="predictions",
-                                key=key,
-                                value=json.dumps(model_response, cls=CustomEncoder),
-                            )
-                            consumer.store_offsets(msg)
+                model_response = query_torchserve(value)
+                if model_response:
+                    producer.produce(
+                        topic="predictions",
+                        key=key,
+                        value=json.dumps(model_response, cls=CustomEncoder),
+                    )
+                    producer.flush()
+                    consumer.commit(msg)
         logging.info("Finished consuming processed data and querying model")
     except Exception as e:
         logging.error(f"Failed to consume processed data and query model: {e}")
+    finally:
+        consumer.close()
 
 def main():
     logging.info("Application started")
     try:
         broker_address = KAFKA_BROKER
-        app = Application(broker_address=broker_address, loglevel="DEBUG", auto_offset_reset="earliest", consumer_group="network_data")
     except Exception as e:
         logging.error(f"Failed to connect to Kafka broker: {e}")
         return
 
     # Step 1: Capture network traffic from the file and produce raw data to Kafka
-    capture_thread = threading.Thread(target=capture_network_traffic_from_file, args=("/mnt/capture/traffic.pcap", app))
+    capture_thread = threading.Thread(target=capture_network_traffic_from_file, args=("/mnt/capture/traffic.pcap",))
     capture_thread.start()
 
     # Step 2: Process raw data and produce to processed_data topic
-    process_thread = threading.Thread(target=process_raw_data, args=(app, broker_address))
+    process_thread = threading.Thread(target=process_raw_data, args=(broker_address,))
     process_thread.start()
 
     # Step 3: Consume processed data, query TorchServe, and produce predictions
-    consume_thread = threading.Thread(target=consume_processed_data_and_query_model, args=(app, broker_address))
+    consume_thread = threading.Thread(target=consume_processed_data_and_query_model, args=(broker_address,))
     consume_thread.start()
 
     # Wait for all threads to finish
@@ -258,3 +281,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
