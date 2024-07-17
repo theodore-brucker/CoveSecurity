@@ -1,0 +1,5 @@
+quixstreams
+scapy
+requests
+kafka
+confluent_kafka

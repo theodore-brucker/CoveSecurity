@@ -4,6 +4,8 @@ from sklearn.preprocessing import MinMaxScaler
 import os
 import logging
 import h5py
+import torch
+from torch.utils.data import Dataset, DataLoader
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -82,4 +84,20 @@ def process_packets(input_path, output_path):
     except Exception as e:
         logging.error(f"An error occurred: {e}")
 
+def create_dataloader(hdf5_file, batch_size=32, shuffle=True):
+    dataset = PacketDataset(hdf5_file)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+    return dataloader
 
+class PacketDataset(Dataset):
+    def __init__(self, hdf5_file):
+        self.hdf5_file = hdf5_file
+        with h5py.File(hdf5_file, 'r') as f:
+            self.data = f['packets'][:]
+        self.data = torch.tensor(self.data, dtype=torch.float32)
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx]

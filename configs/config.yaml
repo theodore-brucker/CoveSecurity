@@ -5,7 +5,7 @@ data:
   new_processed_path: C:\Users\theob\Code\Refactored MLSec\data\new_processed\new_processed_data.h5
 model:
   autoencoder_path: models/autoencoder/
-  trained_model_path: models/autoencoder/trained_models/autoencoder_model.h5
+  trained_model_path: C:/Users/theob/Code/Refactored MLSec/model/autoencoder.pt
 
 training:
   epochs: 5

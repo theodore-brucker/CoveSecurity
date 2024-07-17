@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Classifications</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+</head>
+<body>
+    <h1>Real-time Classifications</h1>
+    <ul id="classifications"></ul>
+
+    <script>
+        var socket = io();
+
+        socket.on('new_classification', function(data) {
+            var li = document.createElement("li");
+            li.appendChild(document.createTextNode(JSON.stringify(data)));
+            document.getElementById("classifications").appendChild(li);
+        });
+    </script>
+</body>
+</html>
