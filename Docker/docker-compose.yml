@@ -76,15 +76,29 @@ services:
     networks:
       - kafka_network
 
-  web:
-    build: ./web
+  web_backend:
+    build:
+      context: ./web/backend
+    volumes:
+      - ./web/backend:/app
     ports:
       - "5000:5000"
-      - "8000:8000"
+    networks:
+      kafka_network:
+        aliases:
+          - web_backend
     depends_on:
       - kafka
+
+  web_frontend:
+    build:
+      context: ./web/frontend
+      args:
+        - REACT_APP_BACKEND_URL=http://web_backend:5000
     volumes:
-      - ./web/templates:/app/templates
+      - ./web/frontend:/app
+    ports:
+      - "3000:3000"
     networks:
       - kafka_network
 

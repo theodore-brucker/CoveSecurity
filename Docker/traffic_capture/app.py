@@ -30,23 +30,31 @@ consumer_config = {
     'auto.offset.reset': 'earliest'
 }
 
+# Custom JSON Encoder
+class CustomEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, Decimal):
+            return str(obj)
+        return super(CustomEncoder, self).default(obj)
+
 # Capture Network Traffic
 def packet_callback(packet):
     return packet
 
 def capture_network_traffic_from_file(file_path):
+    logging.info(f"Reading from live capture file")
     while True:
-        logging.info(f"Checking if capture file exists: {file_path}")
+        logging.debug(f"Checking if capture file exists: {file_path}")
         if not os.path.exists(file_path):
             logging.error(f"File not found: {file_path}. Retrying in 5 seconds...")
             time.sleep(5)
             continue
 
-        logging.info(f"Capturing network traffic from file: {file_path}")
+        logging.debug(f"Capturing network traffic from file: {file_path}")
         try:
-            packets = sniff(offline=file_path, count=10)
+            packets = sniff(offline=file_path, count=100)
             if packets:
-                logging.info(f"Captured {len(packets)} packets")
+                logging.debug(f"Captured {len(packets)} packets")
                 produce_raw_data(packets)
             else:
                 logging.info("No packets captured. Sleeping before retrying...")
@@ -57,13 +65,6 @@ def capture_network_traffic_from_file(file_path):
         except Exception as e:
             logging.error(f"Error capturing traffic: {e}. Retrying in 5 seconds...")
             time.sleep(5)
-
-# Custom JSON Encoder
-class CustomEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, Decimal):
-            return str(obj)
-        return super(CustomEncoder, self).default(obj)
 
 # Serialize packet
 def serialize_packet(packet):
@@ -78,7 +79,7 @@ def serialize_packet(packet):
 
 # Produce Raw Data to Kafka
 def produce_raw_data(packets):
-    logging.info("Producing raw data to Kafka")
+    logging.debug("Producing raw data to Kafka")
     producer = Producer(producer_config)
     try:
         for packet in packets:
@@ -90,7 +91,7 @@ def produce_raw_data(packets):
                     value=json.dumps(serialized_packet, cls=CustomEncoder)
                 )
         producer.flush()
-        logging.info("Finished producing raw data to Kafka")
+        logging.debug("Finished producing raw data to Kafka")
     except Exception as e:
         logging.error(f"Failed to produce raw data: {e}")
 
@@ -138,7 +139,7 @@ def process_packet(packet_summary):
 
         return features
     else:
-        logging.error("Non-IP packet received, cannot process")
+        logging.debug("Non-IP packet received, cannot process")
         return None
 
 # Check if topic exists using Kafka admin client
@@ -162,7 +163,6 @@ def process_raw_data(broker_address):
     try:
         logging.info("Subscribing to raw_data topic")
         consumer.subscribe(["raw_data"])
-        logging.info("Subscription to raw_data topic successful")
         
         producer = Producer(producer_config)
         while True:
@@ -191,8 +191,7 @@ def process_raw_data(broker_address):
                         producer.flush()
                         consumer.commit(msg)
                 except Exception as e:
-                    logging.error(f"Failed to process packet: {e}")
-        logging.info("Finished processing raw data")
+                    logging.debug(f"Failed to process packet: {e}")
     except Exception as e:
         logging.error(f"Failed to process raw data: {e}")
     finally:
@@ -221,7 +220,6 @@ def consume_processed_data_and_query_model(broker_address):
     try:
         logging.info("Subscribing to processed_data topic")
         consumer.subscribe(["processed_data"])
-        logging.info("Subscription to processed_data topic successful")
         
         producer = Producer(producer_config)
         while True:
@@ -248,7 +246,6 @@ def consume_processed_data_and_query_model(broker_address):
                     )
                     producer.flush()
                     consumer.commit(msg)
-        logging.info("Finished consuming processed data and querying model")
     except Exception as e:
         logging.error(f"Failed to consume processed data and query model: {e}")
     finally:
@@ -262,15 +259,15 @@ def main():
         logging.error(f"Failed to connect to Kafka broker: {e}")
         return
 
-    # Step 1: Capture network traffic from the file and produce raw data to Kafka
+    # Job 1: Capture network traffic from the file and produce raw data to Kafka
     capture_thread = threading.Thread(target=capture_network_traffic_from_file, args=("/mnt/capture/traffic.pcap",))
     capture_thread.start()
 
-    # Step 2: Process raw data and produce to processed_data topic
+    # Job 2: Process raw data and produce to processed_data topic
     process_thread = threading.Thread(target=process_raw_data, args=(broker_address,))
     process_thread.start()
 
-    # Step 3: Consume processed data, query TorchServe, and produce predictions
+    # Job 3: Consume processed data, query TorchServe, and produce predictions
     consume_thread = threading.Thread(target=consume_processed_data_and_query_model, args=(broker_address,))
     consume_thread.start()
 
