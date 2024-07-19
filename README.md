@@ -1,4 +1,4 @@
-# MLSec2 Anomaly Detection Project
+# MLSec
 
 ## Mission Statement
 
