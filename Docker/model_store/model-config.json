@@ -1,0 +1,10 @@
+{
+    "model": {
+      "modelName": "autoencoder",
+      "handler": "custom_handler.py",
+      "modelFile": "autoencoder.py",
+      "serializedFile": "autoencoder.pt",
+      "extraFiles": "config.properties"
+    }
+  }
+  

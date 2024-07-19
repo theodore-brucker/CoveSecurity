@@ -64,15 +64,15 @@ services:
       - "9308:9308"
 
   torchserve:
-    image: pytorch/torchserve:latest
+    build:
+      context: ./model_store
+      dockerfile: Dockerfile
     ports:
       - "8080:8080"
       - "8081:8081"
+      - "8082:8082"
     volumes:
       - ./model_store:/home/model-server/model-store
-    environment:
-      TS_CONFIG_FILE: /home/model-server/config.properties
-    command: ["torchserve", "--start", "--model-store", "/home/model-server/model-store", "--models", "autoencoder=autoencoder.mar"]
     networks:
       - kafka_network
 
@@ -112,13 +112,14 @@ services:
       - kafka_network
 
   traffic_capture:
-    build: ./traffic_capture
+    build:
+      context: ./traffic_capture
+    volumes:
+      - ./traffic_capture/model:/app/model
+      - C:/capture:/mnt/capture
     environment:
       - KAFKA_BROKER=kafka:9092
-      - KAFKA_TOPIC_RAW=network-traffic
       - CAPTURE_FILE=/mnt/capture/traffic.pcap
-    volumes:
-      - C:\capture:/mnt/capture
     networks:
       - kafka_network
 

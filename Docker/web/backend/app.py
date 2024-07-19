@@ -11,6 +11,7 @@ CORS(app)
 # Kafka configuration
 KAFKA_BROKER = 'kafka:9092'
 RAW_TOPIC = 'raw_data'
+PROCESSED_TOPIC = 'processed_data'
 PREDICTION_TOPIC = 'predictions'
 MAX_RETRIES = 5
 RETRY_DELAY = 2  # in seconds
@@ -43,7 +44,7 @@ def topic_exists(broker_address, topic_name, max_retries=MAX_RETRIES, retry_dela
                 return True
             else:
                 if attempt < max_retries - 1:
-                        time.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+                    time.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
                 logging.debug(f"Topic {topic_name} does not exist.")
         except Exception as e:
             logging.error(f"Error checking topic existence: {e}")
@@ -64,6 +65,12 @@ raw_consumer = Consumer({
     'auto.offset.reset': 'earliest'
 })
 
+processed_consumer = Consumer({
+    'bootstrap.servers': KAFKA_BROKER,
+    'group.id': 'processed_consumer_group',
+    'auto.offset.reset': 'earliest'
+})
+
 prediction_consumer = Consumer({
     'bootstrap.servers': KAFKA_BROKER,
     'group.id': 'prediction_consumer_group',
@@ -72,6 +79,7 @@ prediction_consumer = Consumer({
 
 # Subscribe to topics
 raw_consumer.subscribe([RAW_TOPIC])
+processed_consumer.subscribe([PROCESSED_TOPIC])
 prediction_consumer.subscribe([PREDICTION_TOPIC])
 
 @app.route('/ratio', methods=['GET'])
@@ -103,30 +111,44 @@ def get_ratio():
     ratio = anomalous_count / (normal_count + anomalous_count) if (normal_count + anomalous_count) > 0 else 0
     return jsonify({'ratio': ratio, 'anomalous': anomalous_count, 'normal': normal_count})
 
-@app.route('/raw/<prediction_id>', methods=['GET'])
-def get_raw_data(prediction_id):
-    raw_data = []
-
+@app.route('/raw_sample', methods=['GET'])
+def get_raw_sample():
     try:
-        while True:
-            msg = raw_consumer.poll(1.0)
-            if msg is None:
-                break
-            if msg.error():
-                if msg.error().code() == KafkaException._PARTITION_EOF:
-                    break
-                else:
-                    logging.error(msg.error())
-                    continue
-
-            # Assume the message key is the prediction_id
-            if msg.key().decode('utf-8') == prediction_id:
-                raw_data.append(msg.value().decode('utf-8'))
-
+        msg = raw_consumer.poll(1.0)
+        if msg is None or msg.error():
+            return jsonify({'error': 'No messages in raw_data topic'}), 404
+        sample = {'key': msg.key().decode('utf-8'), 'value': msg.value().decode('utf-8')}
     except Exception as e:
         logging.error(f"Error consuming messages: {e}")
+        return jsonify({'error': 'Failed to fetch sample from raw_data topic'}), 500
 
-    return jsonify({'prediction_id': prediction_id, 'raw_data': raw_data})
+    return jsonify(sample)
+
+@app.route('/processed_sample', methods=['GET'])
+def get_processed_sample():
+    try:
+        msg = processed_consumer.poll(1.0)
+        if msg is None or msg.error():
+            return jsonify({'error': 'No messages in processed_data topic'}), 404
+        sample = {'key': msg.key().decode('utf-8'), 'value': msg.value().decode('utf-8')}
+    except Exception as e:
+        logging.error(f"Error consuming messages: {e}")
+        return jsonify({'error': 'Failed to fetch sample from processed_data topic'}), 500
+
+    return jsonify(sample)
+
+@app.route('/prediction_sample', methods=['GET'])
+def get_prediction_sample():
+    try:
+        msg = prediction_consumer.poll(1.0)
+        if msg is None or msg.error():
+            return jsonify({'error': 'No messages in predictions topic'}), 404
+        sample = {'key': msg.key().decode('utf-8'), 'value': msg.value().decode('utf-8')}
+    except Exception as e:
+        logging.error(f"Error consuming messages: {e}")
+        return jsonify({'error': 'Failed to fetch sample from predictions topic'}), 500
+
+    return jsonify(sample)
 
 # Health check endpoint
 @app.route('/health', methods=['GET'])

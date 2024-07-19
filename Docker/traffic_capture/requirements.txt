@@ -3,3 +3,5 @@ scapy
 requests
 kafka
 confluent_kafka
+scikit-learn
+pandas
