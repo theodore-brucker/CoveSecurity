@@ -111,11 +111,11 @@ services:
     networks:
       - kafka_network
 
-  traffic_capture:
+  data_processing:
     build:
-      context: ./traffic_capture
+      context: ./data_processing
     volumes:
-      - ./traffic_capture/model:/app/model
+      - ./data_processing/model:/app/model
       - C:/capture:/mnt/capture
     environment:
       - KAFKA_BROKER=kafka:9092

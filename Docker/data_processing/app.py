@@ -6,7 +6,7 @@ import pandas as pd
 import requests
 import logging
 from scapy.all import IP, TCP, UDP, ICMP, Ether, sniff, raw
-from confluent_kafka import Producer, Consumer, KafkaException, KafkaError
+from confluent_kafka import Producer, Consumer, KafkaError
 from confluent_kafka.admin import AdminClient
 import threading
 import time
@@ -27,7 +27,6 @@ logging.basicConfig(level=logging.INFO,
 if os.path.exists(MODEL_PATH):
     logging.info(f"App directory contents: {os.listdir(APP_PATH)}")
     logging.info(f"Model directory contents: {os.listdir(MODEL_PATH)}")
-
 
 
 ##################################################
@@ -53,7 +52,6 @@ consumer_config = {
     'group.id': 'network_data',
     'auto.offset.reset': 'earliest'
 }
-
 
 
 ##################################################
@@ -122,7 +120,6 @@ def produce_raw_data(packets, broker_address):
         logging.debug("Thread 1: Finished producing raw data to Kafka")
     except Exception as e:
         logging.error(f"Thread 1: Failed to produce raw data: {e}")
-
 
 
 ##################################################
@@ -252,7 +249,6 @@ def process_packet(packet_summary):
         return None
 
 
-
 ##################################################
 # MODEL - thread 3
 ##################################################
@@ -334,7 +330,6 @@ def query_torchserve(data, retries=5, delay=5):
     
     logging.error(f"Failed to connect to TorchServe after {retries} attempts")
     return None
-
 
 
 ##################################################
