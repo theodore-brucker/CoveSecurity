@@ -1,9 +1,12 @@
+import json
 import logging
+import threading
 import time
 from flask import Flask, jsonify, request
 from confluent_kafka import Consumer, KafkaException
 from confluent_kafka.admin import AdminClient
 from flask_cors import CORS
+import requests
 
 app = Flask(__name__)
 CORS(app)
@@ -154,6 +157,25 @@ def get_prediction_sample():
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({'status': 'healthy'})
+
+model_training = False
+
+@app.route('/train_model', methods=['POST'])
+def train_model():
+    data = request.json
+    start_date = data.get('startDate')
+    end_date = data.get('endDate')
+
+    if not start_date or not end_date:
+        return jsonify({"message": "Start and end dates are required"}), 400
+
+    # Send request to data processing service
+    try:
+        response = requests.post('http://data_processing:5000/train_model', json=data)
+        response.raise_for_status()
+        return jsonify(response.json()), 200
+    except requests.exceptions.RequestException as e:
+        return jsonify({"message": f"Error initiating model training: {str(e)}"}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
