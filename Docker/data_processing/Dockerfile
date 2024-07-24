@@ -10,12 +10,6 @@ COPY . /app
 # Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Ensure the model directory exists
-RUN mkdir -p /app/model
-
-# Copy the minmax scaler file
-COPY model/minmaxscaler.pkl /app/model/minmaxscaler.pkl
-
 # Install curl
 RUN apt-get update && apt-get install -y curl
 
