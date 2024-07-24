@@ -73,6 +73,7 @@ services:
       - "8082:8082"
     volumes:
       - ./model_store:/home/model-server/model-store
+      - scaler_data:/home/model-server/scaler_data
     networks:
       - kafka_network
 
@@ -117,6 +118,7 @@ services:
     volumes:
       - ./data_processing/model:/app/model
       - C:/capture:/mnt/capture
+      - scaler_data:/app/scaler_data
     environment:
       - KAFKA_BROKER=kafka:9092
       - CAPTURE_FILE=/mnt/capture/traffic.pcap
@@ -126,3 +128,6 @@ services:
 networks:
   kafka_network:
     driver: bridge
+
+volumes:
+  scaler_data:
