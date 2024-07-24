@@ -4,5 +4,11 @@ pandas
 scikit-learn
 h5py
 
-# For TorchServe
-torchserve
+# Third-party libraries
+requests
+torch
+numpy
+
+# TorchServe dependencies
+torchserve==0.3.0
+torch-model-archiver==0.3.0

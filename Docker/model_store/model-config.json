@@ -1,9 +1,9 @@
 {
     "model": {
-      "modelName": "autoencoder",
+      "modelName": "memory_autoencoder",
       "handler": "custom_handler.py",
-      "modelFile": "autoencoder.py",
-      "serializedFile": "autoencoder.pt",
+      "modelFile": "memory_autoencoder.py",
+      "serializedFile": "memory_autoencoder.pt",
       "extraFiles": "config.properties"
     }
   }
