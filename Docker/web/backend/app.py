@@ -1,6 +1,4 @@
-import json
 import logging
-import threading
 import time
 from flask import Flask, jsonify, request
 from confluent_kafka import Consumer, KafkaException
@@ -178,4 +176,5 @@ def train_model():
         return jsonify({"message": f"Error initiating model training: {str(e)}"}), 500
 
 if __name__ == '__main__':
+    logging.info("MLSEC web backend engine starting on 0.0.0.0:5000")
     app.run(host='0.0.0.0', port=5000)

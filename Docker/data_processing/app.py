@@ -1,7 +1,6 @@
 import hashlib
 import json
 import os
-import pickle
 import pandas as pd
 import requests
 import logging
@@ -584,7 +583,7 @@ def health_check():
 ##################################################
 
 def main():
-    logging.info("Application started")
+    logging.info("MLSEC data processing engine starting on ")
     time.sleep(10)
     try:
         broker_address = KAFKA_BROKER
