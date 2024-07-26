@@ -14,16 +14,21 @@ services:
     image: confluentinc/cp-kafka:latest
     ports:
       - "9092:9092"
+      - "29092:29092"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
       KAFKA_LOG_RETENTION_HOURS: 1
-      KAFKA_LOG_DIRS: /var/lib/kafka/data
       KAFKA_DELETE_TOPIC_ENABLE: 'true'
+      KAFKA_OPTS: "-Djava.net.preferIPv4Stack=true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - zookeeper
     networks:
@@ -82,12 +87,22 @@ services:
       context: ./web/backend
     volumes:
       - ./web/backend:/app
+    environment:  #Running in Docker-Network so can use DNS resolution to get everything except data_processing which needs host.docker.internal
+      - KAFKA_BROKER=kafka:9092
+      - RAW_TOPIC=raw_data
+      - PROCESSED_TOPIC=processed_data
+      - PREDICTION_TOPIC=predictions
+      - MAX_RETRIES=5
+      - RETRY_DELAY=2
+      - DATA_PROCESSING_URL=http://172.17.0.1:5001 #Address for the WSL instance, since DP runs on host mode instead of in docker network
     ports:
       - "5000:5000"
     networks:
       kafka_network:
         aliases:
           - web_backend
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - kafka
 
@@ -115,15 +130,33 @@ services:
   data_processing:
     build:
       context: ./data_processing
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
     volumes:
-      - ./data_processing/model:/app/model
-      - C:/capture:/mnt/capture
       - scaler_data:/app/scaler_data
-    environment:
-      - KAFKA_BROKER=kafka:9092
-      - CAPTURE_FILE=/mnt/capture/traffic.pcap
-    networks:
-      - kafka_network
+    environment: #Running on host (WSL) network so need to use exposed path to all containers in docker network...
+      - KAFKA_BROKER=localhost:29092
+      - RAW_TOPIC=raw_data
+      - PROCESSED_TOPIC=processed_data
+      - PREDICTIONS_TOPIC=predictions
+      
+      - CAPTURE_INTERFACE=eth0
+      - TORCHSERVE_REQUESTS=http://localhost:8080
+      - TORCHSERVE_MANAGEMENT=http://localhost:8081
+      - TORCHSERVE_METRICS=http://localhost:8082
+      - ANOMALY_THRESHOLD=1
+      - WEB_BACKEND_URL=http://localhost:5000
+
+      - FLASK_PORT=5001 # Where this app is going to be served on http://172.17.0.1
+    depends_on:
+      - kafka
+      - torchserve
+      - web_backend
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    
 
 networks:
   kafka_network:

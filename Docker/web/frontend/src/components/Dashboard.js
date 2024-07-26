@@ -40,6 +40,8 @@ const Dashboard = () => {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [trainingStatus, setTrainingStatus] = useState('');
+  const [anomalyNumbers, setAnomalyNumbers] = useState({ total: 0, normal: 0, anomalous: 0 });
+  const [isUpdatingAnomalyNumbers, setIsUpdatingAnomalyNumbers] = useState(false);
 
   const fetchData = async (url, setStateFunction, logMessage, fillerValue) => {
     logger.log(logMessage);
@@ -80,9 +82,33 @@ const Dashboard = () => {
     }
   };
   
-
   const getHealthStatusClass = (status) => {
     return status === 'OK' ? 'status-healthy' : 'status-unhealthy';
+  };
+
+  const startUpdatingAnomalyNumbers = () => {
+    setIsUpdatingAnomalyNumbers(true);
+    const eventSource = new EventSource('http://localhost:5000/anomaly_numbers');
+    
+    eventSource.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      setAnomalyNumbers(data);
+    };
+
+    eventSource.onerror = (error) => {
+      console.error('EventSource failed:', error);
+      eventSource.close();
+      setIsUpdatingAnomalyNumbers(false);
+    };
+
+    return () => {
+      eventSource.close();
+      setIsUpdatingAnomalyNumbers(false);
+    };
+  };
+
+  const stopUpdatingAnomalyNumbers = () => {
+    setIsUpdatingAnomalyNumbers(false);
   };
 
   useEffect(() => {
@@ -106,7 +132,20 @@ const Dashboard = () => {
           </div>
         </header>
         <div className="dashboard">
-          <div className="dashboard-item traffic-ratio">
+          <div className="dashboard-item anomaly-numbers">
+            <h2>Anomaly Numbers</h2>
+            <p><span className="data-label">Total Predictions:</span> {anomalyNumbers.total}</p>
+            <p><span className="data-label">Normal Entries:</span> {anomalyNumbers.normal}</p>
+            <p><span className="data-label">Anomalous Entries:</span> {anomalyNumbers.anomalous}</p>
+            <button 
+              onClick={isUpdatingAnomalyNumbers ? stopUpdatingAnomalyNumbers : startUpdatingAnomalyNumbers}
+              className={isUpdatingAnomalyNumbers ? 'stop-update-button' : 'start-update-button'}
+            >
+              {isUpdatingAnomalyNumbers ? 'Stop Updating' : 'Start Updating'}
+            </button>
+          </div>
+          
+          {/* <div className="dashboard-item traffic-ratio">
             <h2>Traffic Ratio</h2>
             {ratio ? (
               <div>
@@ -117,7 +156,7 @@ const Dashboard = () => {
             ) : (
               <p className="loading">Loading ratio...</p>
             )}
-          </div>
+          </div> */}
           <div className="data-samples">
             <div className="dashboard-item">
               <h2>Raw Data Sample</h2>
@@ -141,7 +180,7 @@ const Dashboard = () => {
                 <p className="loading">Loading processed data sample...</p>
               )}
             </div>
-            <div className="dashboard-item">
+            {/* <div className="dashboard-item">
               <h2>Prediction Data Sample</h2>
               {predictionSample ? (
                 <div>
@@ -151,7 +190,7 @@ const Dashboard = () => {
               ) : (
                 <p className="loading">Loading prediction data sample...</p>
               )}
-            </div>
+            </div> */}
           </div>
           <div className="dashboard-item train-model-card">
             <h2>Train Model</h2>
