@@ -5,7 +5,7 @@ import pandas as pd
 import requests
 import logging
 from scapy.all import IP, TCP, UDP, ICMP, Ether, sniff, raw
-from confluent_kafka import Producer, Consumer, KafkaError
+from confluent_kafka import Producer, Consumer, KafkaError, KafkaException
 from confluent_kafka.admin import AdminClient
 import threading
 import time
@@ -13,28 +13,93 @@ from decimal import Decimal
 from flask import Flask, jsonify, request
 import threading
 from sklearn.preprocessing import RobustScaler
+import netifaces
 
-KAFKA_BROKER = os.getenv('KAFKA_BROKER', 'kafka:9092')
-RAW_TOPIC = 'raw_data'
-PROCESSED_TOPIC = 'processed_data'
-PREDICTIONS_TOPIC = 'predictions'
-MODEL_PATH = '/app/model/'
-APP_PATH = '/app/'
+APP_PATH = '/app/' 
+
+KAFKA_BROKER = os.getenv('KAFKA_BROKER')
+RAW_TOPIC = os.getenv('RAW_TOPIC')
+PROCESSED_TOPIC = os.getenv('PROCESSED_TOPIC')
+PREDICTIONS_TOPIC = os.getenv('PREDICTIONS_TOPIC')
+
+FLASK_PORT = int(os.getenv('FLASK_PORT', 5001))
+CAPTURE_INTERFACE = os.getenv('CAPTURE_INTERFACE', 'eth0')
+
+TORCHSERVE_REQUESTS_URL = os.getenv('TORCHSERVE_REQUESTS', 'http://localhost:8080')
+TORCHSERVE_MANAGEMENT_URL = os.getenv('TORCHSERVE_MANAGEMENT', 'http://localhost:8081')
+TORCHSERVE_METRICS_URL = os.getenv('TORCHSERVE_METRICS', 'http://localhost:8082')
+MODEL_NAME = os.getenv('MODEL_NAME', 'memory_autoencoder')
 SCALER_PATH = '/app/scaler_data/robust_scaler.pkl'
-TORCHSERVE_URL = "http://torchserve:8080"
+ANOMALY_THRESHOLD = os.getenv('ANOMALY_THRESHOLD', 1)
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(message)s',
                     handlers=[logging.StreamHandler()])
 
-if os.path.exists(MODEL_PATH):
-    logging.info(f"App directory contents: {os.listdir(APP_PATH)}")
-    logging.info(f"Model directory contents: {os.listdir(MODEL_PATH)}")
 
+logging.info(f"App directory contents: {os.listdir(APP_PATH)}")
+logging.info(f"Configured Kafka broker URL: {KAFKA_BROKER}")
+logging.info(f"Configured TorchServe requests URL: {TORCHSERVE_REQUESTS_URL}")
+logging.info(f"Configured TorchServe management URL: {TORCHSERVE_MANAGEMENT_URL}")
+logging.info(f"Configured capture interface: {CAPTURE_INTERFACE}")
 
 ##################################################
-# KAFKA UTILITY
+# KAFKA MANAGERS AND UTILITY
 ##################################################
+
+class ProducerManager:
+    def __init__(self):
+        self.producers = {}
+        self.lock = threading.Lock()
+
+    def get_producer(self, topic):
+        with self.lock:
+            if topic not in self.producers:
+                config = producer_config.copy()
+                config['client.id'] = f'producer-{topic}'
+                try:
+                    self.producers[topic] = Producer(config)
+                    logging.info(f"Successfully created producer for topic: {topic}")
+                except KafkaException as e:
+                    logging.error(f"Failed to create producer for topic {topic}: {e}")
+                    raise
+            return self.producers[topic]
+
+class ConsumerManager:
+    def __init__(self):
+        self.consumers = {}
+        self.lock = threading.Lock()
+
+    def get_consumer(self, topic, group_id):
+        with self.lock:
+            key = f"{topic}-{group_id}"
+            if key not in self.consumers:
+                config = consumer_config.copy()
+                config['group.id'] = group_id
+                try:
+                    self.consumers[key] = Consumer(config)
+                    self.consumers[key].subscribe([topic])
+                    logging.info(f"Successfully created consumer for topic: {topic}, group: {group_id}")
+                except KafkaException as e:
+                    logging.error(f"Failed to create consumer for topic {topic}, group {group_id}: {e}")
+                    raise
+            return self.consumers[key]
+
+producer_manager = ProducerManager()
+consumer_manager = ConsumerManager()
+
+producer_config = {
+    'bootstrap.servers': KAFKA_BROKER,
+    'client.dns.lookup': 'use_all_dns_ips',
+    'broker.address.family': 'v4'
+}
+
+consumer_config = {
+    'bootstrap.servers': KAFKA_BROKER,
+    'auto.offset.reset': 'earliest',
+    'client.dns.lookup': 'use_all_dns_ips',
+    'broker.address.family': 'v4'
+}
 
 # Uses AdminClient to verify the existence of a topic
 def topic_exists(broker_address, topic_name):
@@ -45,16 +110,6 @@ def topic_exists(broker_address, topic_name):
     except Exception as e:
         logging.error(f"Error checking topic existence: {e}")
         return False
-
-producer_config = {
-    'bootstrap.servers': KAFKA_BROKER
-}
-
-consumer_config = {
-    'bootstrap.servers': KAFKA_BROKER,
-    'group.id': 'network_data',
-    'auto.offset.reset': 'earliest'
-}
 
 
 ##################################################
@@ -88,6 +143,55 @@ def capture_network_traffic_from_file(file_path, broker_address):
             logging.error(f"Thread 1: Error capturing traffic: {e}. Retrying in 5 seconds...")
             time.sleep(5)
 
+def get_available_interfaces():
+    logging.info('Getting available interfaces')
+    return netifaces.interfaces()
+
+def check_interface(interface):
+    available_interfaces = get_available_interfaces()
+    logging.info(f"Checking if {interface} is available.")
+    if interface not in available_interfaces:
+        logging.error(f"{interface} not found. Available interfaces: {available_interfaces}")
+        return False
+    logging.info(f"{interface} is available.")
+    return True
+
+def check_ports(interface, ports, retry_interval=5):
+    # This function checks if the specified ports are being forwarded to the interface
+    logging.info(f"Checking if ports {ports} are being forwarded to interface {interface}")
+
+    def packet_callback(packet):
+        if IP in packet:
+            if packet[IP].dst == interface:
+                if TCP in packet and packet[TCP].dport in ports:
+                    logging.info(f"Traffic detected on port {packet[TCP].dport}")
+                    return True
+                if UDP in packet and packet[UDP].dport in ports:
+                    logging.info(f"Traffic detected on port {packet[UDP].dport}")
+                    return True
+        return False
+
+    while True:
+        try:
+            # Capture packets for a short duration to check for incoming traffic
+            result = sniff(iface=interface, prn=packet_callback, timeout=10)
+            if result:
+                logging.info(f"Traffic detected on ports {ports}")
+                return True
+        except Exception as e:
+            logging.error(f"Error checking ports: {e}")
+        logging.info(f"No traffic detected on ports {ports} for interface {interface}. Retrying in {retry_interval} seconds...")
+        time.sleep(retry_interval)
+
+def capture_live_traffic(interface, broker_address):
+    if not check_ports(interface, [80, 443]):
+        logging.error(f"Ports are not being forwarded to interface {interface}")
+        return
+    try:
+        sniff(iface=interface, prn=lambda x: produce_raw_data(x, broker_address), store=0)
+    except Exception as e:
+        logging.error(f"Thread 1: Error capturing live traffic: {e}")
+
 # Utility function to serialize the packets
 def serialize_packet(packet):
     try:
@@ -103,26 +207,35 @@ def serialize_packet(packet):
 
 # Produces the raw data packets from capture to the raw data topic
 def produce_raw_data(packets, broker_address):
-    logging.debug("Thread 1: Connecting to {}".format(RAW_TOPIC))
-    while not topic_exists(broker_address, RAW_TOPIC):
-        logging.warning(f"Thread 1: {RAW_TOPIC} topic not found. Sleeping for 10 seconds and retrying...")
-        time.sleep(10)
-    logging.debug("Thread 1: Connected to {}".format(RAW_TOPIC))
 
-    producer = Producer(producer_config)
     try:
-        for packet in packets:
-            serialized_packet = serialize_packet(packet)
-            if serialized_packet:
-                producer.produce(
-                    topic="raw_data",
-                    key=str(packet.time),
-                    value=json.dumps(serialized_packet, cls=CustomEncoder)
-                )
-        producer.flush()
-        logging.debug("Thread 1: Finished producing raw data to Kafka")
-    except Exception as e:
-        logging.error(f"Thread 1: Failed to produce raw data: {e}")
+        producer = producer_manager.get_producer(RAW_TOPIC)
+    except KafkaException as e:
+        logging.error(f"Thread 1: Failed to get producer for {RAW_TOPIC}: {e}")
+        return
+    retry_count = 0
+    max_retries = 5
+
+    while retry_count < max_retries:
+        try:
+            for packet in packets:
+                serialized_packet = serialize_packet(packet)
+                if serialized_packet:
+                    producer.produce(
+                        topic=RAW_TOPIC,
+                        key=str(packet.time),
+                        value=json.dumps(serialized_packet, cls=CustomEncoder)
+                    )
+            producer.flush()
+            logging.debug("Thread 1: Finished producing raw data to Kafka")
+            break
+        except:
+            logging.error(f"Thread 1: Failed to produce raw data")
+            retry_count += 1
+            time.sleep(2 ** retry_count)  # Exponential backoff
+
+    if retry_count == max_retries:
+        logging.error("Thread 1: Max retries reached. Failed to produce raw data.")
 
 
 ##################################################
@@ -135,15 +248,9 @@ class CustomEncoder(json.JSONEncoder):
             return str(obj)
         return super(CustomEncoder, self).default(obj)
 
-def fit_scaler(broker_address, sample_size=1000):
-    consumer_config = {
-        'bootstrap.servers': broker_address,
-        'group.id': 'scaler_fitting',
-        'auto.offset.reset': 'earliest'
-    }
-    consumer = Consumer(consumer_config)
-    consumer.subscribe([RAW_TOPIC])
-    
+
+def fit_scaler(broker_address, sample_size=1000):    
+    consumer = consumer_manager.get_consumer(RAW_TOPIC, 'scaler_fitting')
     features_list = []
     while len(features_list) < sample_size:
         msg = consumer.poll(1.0)
@@ -157,8 +264,6 @@ def fit_scaler(broker_address, sample_size=1000):
         if features:
             features_list.append(features)
     
-    consumer.close()
-    
     df = pd.DataFrame(features_list, columns=['src_ip', 'src_port', 'dst_ip', 'dst_port', 'protocol', 'flags'])
     scaler = RobustScaler()
     scaler.fit(df)
@@ -171,27 +276,17 @@ def update_scaler(scaler, new_data, current_data):
     return updated_scaler, combined_data
 
 def process_raw_data(broker_address):
-    logging.info("Thread 2: Connecting to {}".format(RAW_TOPIC))
-    while not topic_exists(broker_address, RAW_TOPIC):
-        logging.warning("Thread 2: {} topic not found. Sleeping for 10 seconds and retrying...".format(RAW_TOPIC))
-        time.sleep(10)
-    logging.info("Thread 2: Connected to {}".format(RAW_TOPIC))
+    logging.info('Thread 2: Starting raw data processing')
+    consumer = consumer_manager.get_consumer(RAW_TOPIC, 'network_data')
 
-    consumer_config = {
-        'bootstrap.servers': broker_address,
-        'group.id': 'network_data',
-        'auto.offset.reset': 'earliest'
-    }
-
-    producer_config = {
-        'bootstrap.servers': broker_address
-    }
-
-    consumer = Consumer(consumer_config)
-    producer = Producer(producer_config)
+    try:
+        producer = producer_manager.get_producer(PROCESSED_TOPIC)
+    except KafkaException as e:
+        logging.error(f"Thread 2: Failed to get producer for {PROCESSED_TOPIC}: {e}")
+        return
     
     # Fit the scaler on initial sample of data
-    initial_sample_size = 1000
+    initial_sample_size = 100
     scaler, current_data = fit_scaler(broker_address, sample_size=initial_sample_size)
     logging.info("Thread 2: Scaler fitted on initial sample data")
 
@@ -200,7 +295,7 @@ def process_raw_data(broker_address):
     new_data = []
 
     try:
-        consumer.subscribe([RAW_TOPIC])
+        logging.info(f"Thread 2: Producing to {PROCESSED_TOPIC}")
         while True:
             msg = consumer.poll(10)
             if msg is None:
@@ -255,7 +350,6 @@ def process_raw_data(broker_address):
     except Exception as e:
         logging.error("Thread 2: Failed to consume or produce messages: {}".format(e))
     finally:
-        consumer.close()
         producer.flush()
 
 def scale_features(features, scaler):
@@ -334,12 +428,7 @@ def train_model_process(start_date, end_date):
 
 def fetch_data_from_kafka(start_date, end_date):
     logging.info(f"Fetching data from Kafka between {start_date} and {end_date}")
-    consumer = Consumer({
-        'bootstrap.servers': KAFKA_BROKER,
-        'group.id': 'model_training_group',
-        'auto.offset.reset': 'earliest'
-    })
-    consumer.subscribe([PROCESSED_TOPIC])
+    consumer = consumer_manager.get_consumer(PROCESSED_TOPIC, 'model_training_group')
 
     data = []
     try:
@@ -360,7 +449,7 @@ def fetch_data_from_kafka(start_date, end_date):
                 break
 
     finally:
-        consumer.close()
+        pass
 
     return data
 
@@ -368,7 +457,7 @@ def check_torchserve_availability():
     max_retries = 5
     for attempt in range(max_retries):
         try:
-            response = requests.get(f"{TORCHSERVE_URL}/ping")
+            response = requests.get(f"{TORCHSERVE_MANAGEMENT_URL}/models")
             if response.status_code == 200:
                 logging.info("TorchServe is available")
                 return True
@@ -380,7 +469,7 @@ def check_torchserve_availability():
 
 def deregister_model(model_name, version):
     try:
-        response = requests.delete(f"http://torchserve:8081/models/{model_name}/{version}")
+        response = requests.delete(f"{TORCHSERVE_MANAGEMENT_URL}/models/{model_name}/{version}")
         if response.status_code == 200:
             logging.info(f"Successfully deregistered model {model_name} version {version}")
         else:
@@ -403,7 +492,7 @@ def train_and_set_inference_mode(data):
     max_retries = 300
     for attempt in range(max_retries):
         try:
-            url = "http://torchserve:8081/models/memory_autoencoder"
+            url = f"{TORCHSERVE_MANAGEMENT_URL}/models/{MODEL_NAME}"
             params = {'min_worker': '1'}
             
             response = requests.put(url, params=params)
@@ -421,7 +510,6 @@ def train_and_set_inference_mode(data):
     return False
 
 def train_model(data):
-    model_name = "memory_autoencoder"
     model_version = "1.0"
     max_retries = 5
 
@@ -429,15 +517,15 @@ def train_model(data):
     
     # Check if the model is already registered
     try:
-        response = requests.get(f"http://torchserve:8081/models/{model_name}")
+        response = requests.get(f"{TORCHSERVE_MANAGEMENT_URL}/models/{MODEL_NAME}")
         if response.status_code == 200:
-            logging.info(f"Model {model_name} is registered.")
+            logging.info(f"Model {MODEL_NAME} is registered.")
     except requests.RequestException as e:
         logging.error(f"Error checking existing model registration: {e}")
     
     for attempt in range(max_retries):
         try:
-            url = f"{TORCHSERVE_URL}/predictions/memory_autoencoder"
+            url = f"{TORCHSERVE_REQUESTS_URL}/predictions/{MODEL_NAME}"
             headers = {'X-Request-Type': 'train'}
             
             logging.info(f"Sending model training request with {data} (attempt {attempt + 1})")
@@ -472,14 +560,14 @@ def wait_for_model_ready():
     logging.info("Model is ready")
 
 def query_model(data):
-    url = f"{TORCHSERVE_URL}/predictions/memory_autoencoder"
+    url = f"{TORCHSERVE_REQUESTS_URL}/predictions/{MODEL_NAME}"
     
     logging.info(f"Querying model with data: {data}")
     try:
         response = requests.post(url, json=data)
         response.raise_for_status()
         prediction = response.json()
-        logging.info(f"Received prediction {prediction} using weights from: {prediction.get('weights_file')}")
+        logging.debug(f"Received prediction {prediction} using weights from: {prediction.get('weights_file')}")
         return prediction
     except requests.exceptions.RequestException as e:
         logging.error(f"Error querying model: {e}")
@@ -487,18 +575,16 @@ def query_model(data):
 
 def prediction_thread():
     logging.info("Starting prediction thread")
-    
+    consumer = consumer_manager.get_consumer(PROCESSED_TOPIC, 'prediction_group')
+
     # Wait for the model to be ready before starting predictions
     wait_for_model_ready()
     
-    consumer = Consumer({
-        'bootstrap.servers': KAFKA_BROKER,
-        'group.id': 'prediction_group',
-        'auto.offset.reset': 'latest'
-    })
-    consumer.subscribe([PROCESSED_TOPIC])
-
-    producer = Producer({'bootstrap.servers': KAFKA_BROKER})
+    try:
+        producer = producer_manager.get_producer(PREDICTIONS_TOPIC)
+    except KafkaException as e:
+        logging.error(f"Failed to get producer for {PREDICTIONS_TOPIC}: {e}")
+        return
 
     try:
         while True:
@@ -523,10 +609,15 @@ def prediction_thread():
 
                 for result in anomaly_results:
                     packet_id = result['packet_id']
+                    if float(result['reconstruction_error']) < float(ANOMALY_THRESHOLD):
+                        anomaly = False
+                    else:
+                        anomaly = True
                     output = {
                         "packet_id": packet_id,
                         "reconstruction_error": result['reconstruction_error'],
-                        "weights_file": weights_file
+                        "is_anomaly": anomaly
+                        #"weights_file": weights_file
                     }
 
                     producer.produce(PREDICTIONS_TOPIC, key=str(packet_id), value=json.dumps(output))
@@ -540,9 +631,9 @@ def prediction_thread():
                 logging.error(f"Unexpected error processing message: {e}")
 
     except KeyboardInterrupt:
-        logging.info("Interrupted. Closing consumer.")
+        logging.info("Interrupted.")
     finally:
-        consumer.close()
+        pass
 
 ##################################################
 # FLASK FOR MODEL TRAINING - thread 4
@@ -583,19 +674,21 @@ def health_check():
 ##################################################
 
 def main():
-    logging.info("MLSEC data processing engine starting on ")
-    time.sleep(10)
-    try:
-        broker_address = KAFKA_BROKER
-    except Exception as e:
-        logging.error(f"No broker address found: {e}")
+    logging.info("MLSEC data processing engine starting")
+    time.sleep(5)
+
+    available_interfaces = get_available_interfaces()
+    logging.info(f"Available network interfaces: {available_interfaces}")
+
+    if CAPTURE_INTERFACE not in available_interfaces:
+        logging.error(f"Specified interface {CAPTURE_INTERFACE} not found. Please choose from: {available_interfaces}")
         return
 
     threads = [
-        threading.Thread(target=capture_network_traffic_from_file, args=("/mnt/capture/traffic.pcap", broker_address)),
-        threading.Thread(target=process_raw_data, args=(broker_address,)),
+        threading.Thread(target=capture_live_traffic, args=(CAPTURE_INTERFACE, KAFKA_BROKER)),
+        threading.Thread(target=process_raw_data, args=(KAFKA_BROKER,)),
         threading.Thread(target=prediction_thread),
-        threading.Thread(target=app.run, kwargs={'host': '0.0.0.0', 'port': 5000})
+        threading.Thread(target=app.run, kwargs={'host': '0.0.0.0', 'port': FLASK_PORT})
     ]
 
     for thread in threads:
@@ -606,7 +699,6 @@ def main():
             thread.join()
     except KeyboardInterrupt:
         logging.info("Shutting down ...")
-        # TO DO - Implement cleanup logic here
 
 if __name__ == "__main__":
     main()

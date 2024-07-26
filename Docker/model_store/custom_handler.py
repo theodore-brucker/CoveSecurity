@@ -164,7 +164,7 @@ class PacketAnomalyDetector(BaseHandler):
                 logger.info("Received training request")
                 response = self.train(data, context)
                 self.weights_file = "/home/model-server/model-store/memory_autoencoder_latest.pth"
-                logger.info(f"Responding to request with: {response}")
+                logger.debug(f"Responding to request with: {response}")
                 logger.info(f"Training request handled successfully")
                 return response
             else:
@@ -181,14 +181,13 @@ class PacketAnomalyDetector(BaseHandler):
                     "weights_file": self.weights_file or "No weights file loaded"
                 }
                 
-                logger.info(f"Responding to inference with: {response}")
+                logger.debug(f"Responding to inference with: {response}")
                 logger.info("Inference request handled successfully")
                 return [json.dumps(response)]
         except Exception as e:
             logger.error(f"Error handling request: {str(e)}", exc_info=True)
             return [json.dumps({"status": "error", "message": str(e)})]
 
-    
     def train(self, data, context):
         logger.info("Starting model training")
         self.model.train()

@@ -1,5 +1,6 @@
 import logging
 import time
+import os
 from flask import Flask, jsonify, request
 from confluent_kafka import Consumer, KafkaException
 from confluent_kafka.admin import AdminClient
@@ -9,13 +10,14 @@ import requests
 app = Flask(__name__)
 CORS(app)
 
-# Kafka configuration
-KAFKA_BROKER = 'kafka:9092'
-RAW_TOPIC = 'raw_data'
-PROCESSED_TOPIC = 'processed_data'
-PREDICTION_TOPIC = 'predictions'
-MAX_RETRIES = 5
-RETRY_DELAY = 2  # in seconds
+# Environment variables
+KAFKA_BROKER = os.getenv('KAFKA_BROKER', 'kafka:9092')
+RAW_TOPIC = os.getenv('RAW_TOPIC', 'raw_data')
+PROCESSED_TOPIC = os.getenv('PROCESSED_TOPIC', 'processed_data')
+PREDICTION_TOPIC = os.getenv('PREDICTION_TOPIC', 'predictions')
+MAX_RETRIES = int(os.getenv('MAX_RETRIES', '5'))
+RETRY_DELAY = int(os.getenv('RETRY_DELAY', '2'))
+DATA_PROCESSING_URL = os.getenv('DATA_PROCESSING_URL', 'http://172.17.0.1:5001')
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -83,34 +85,39 @@ raw_consumer.subscribe([RAW_TOPIC])
 processed_consumer.subscribe([PROCESSED_TOPIC])
 prediction_consumer.subscribe([PREDICTION_TOPIC])
 
-@app.route('/ratio', methods=['GET'])
-def get_ratio():
-    anomalous_count = 0
-    normal_count = 0
+from flask import Response
+import json
 
-    try:
+@app.route('/anomaly_numbers', methods=['GET'])
+def get_anomaly_numbers():
+    def generate():
+        anomalous_count = 0
+        normal_count = 0
+        total_count = 0
+
         while True:
             msg = prediction_consumer.poll(1.0)
             if msg is None:
-                break
+                yield f"data: {json.dumps({'total': total_count, 'normal': normal_count, 'anomalous': anomalous_count})}\n\n"
+                time.sleep(1)  # Wait for 1 second before polling again
+                continue
             if msg.error():
                 if msg.error().code() == KafkaException._PARTITION_EOF:
-                    break
+                    continue
                 else:
                     logging.error(msg.error())
                     continue
 
-            prediction = msg.value().decode('utf-8')
-            if prediction == 'anomalous':
+            prediction = json.loads(msg.value().decode('utf-8'))
+            total_count += 1
+            if prediction['is_anomaly']:
                 anomalous_count += 1
             else:
                 normal_count += 1
 
-    except Exception as e:
-        logging.error(f"Error consuming messages: {e}")
+            yield f"data: {json.dumps({'total': total_count, 'normal': normal_count, 'anomalous': anomalous_count})}\n\n"
 
-    ratio = anomalous_count / (normal_count + anomalous_count) if (normal_count + anomalous_count) > 0 else 0
-    return jsonify({'ratio': ratio, 'anomalous': anomalous_count, 'normal': normal_count})
+    return Response(generate(), mimetype='text/event-stream')
 
 @app.route('/raw_sample', methods=['GET'])
 def get_raw_sample():
@@ -169,12 +176,13 @@ def train_model():
 
     # Send request to data processing service
     try:
-        response = requests.post('http://data_processing:5000/train_model', json=data)
+        response = requests.post(f'{DATA_PROCESSING_URL}/train_model', json=data)
         response.raise_for_status()
         return jsonify(response.json()), 200
     except requests.exceptions.RequestException as e:
         return jsonify({"message": f"Error initiating model training: {str(e)}"}), 500
 
 if __name__ == '__main__':
-    logging.info("MLSEC web backend engine starting on 0.0.0.0:5000")
-    app.run(host='0.0.0.0', port=5000)
+    port = int(os.getenv('PORT', '5000'))
+    logging.info(f"MLSEC web backend engine starting on 0.0.0.0:{port}")
+    app.run(host='0.0.0.0', port=port)
