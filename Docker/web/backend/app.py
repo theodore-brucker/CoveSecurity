@@ -133,7 +133,12 @@ def emit_processed_sample():
                 logging.error(f"Error in emit_processed_sample: {e}")
             socketio.sleep(1)
 
+total_predictions = 0
+normal_predictions = 0
+anomalous_predictions = 0
+
 def emit_anomaly_numbers():
+    global total_predictions, normal_predictions, anomalous_predictions
     with app.app_context():
         while True:
             try:
@@ -142,7 +147,25 @@ def emit_anomaly_numbers():
                     socketio.emit('anomaly_numbers_update', numbers)
             except Exception as e:
                 logging.error(f"Error in emit_anomaly_numbers: {e}")
-            socketio.sleep(1)
+            socketio.sleep(.01)
+
+def get_anomaly_numbers():
+    global total_predictions, normal_predictions, anomalous_predictions
+    consumer = consumer_manager.get_consumer(PREDICTION_TOPIC, 'prediction_consumer_group')
+    msg = consumer.poll(0.01)
+    if msg is None or msg.error():
+        return None
+    prediction = json.loads(msg.value().decode('utf-8'))
+    total_predictions += 1
+    if prediction['is_anomaly']:
+        anomalous_predictions += 1
+    else:
+        normal_predictions += 1
+    return {
+        'total': total_predictions,
+        'normal': normal_predictions,
+        'anomalous': anomalous_predictions
+    }
 
 def get_raw_sample():
     consumer = consumer_manager.get_consumer(RAW_TOPIC, 'raw_consumer_group')
@@ -157,18 +180,6 @@ def get_processed_sample():
     if msg is None or msg.error():
         return None
     return json.loads(msg.value().decode('utf-8'))
-
-def get_anomaly_numbers():
-    consumer = consumer_manager.get_consumer(PREDICTION_TOPIC, 'prediction_consumer_group')
-    msg = consumer.poll(1.0)
-    if msg is None or msg.error():
-        return None
-    prediction = json.loads(msg.value().decode('utf-8'))
-    return {
-        'total': 1,
-        'normal': 0 if prediction['is_anomaly'] else 1,
-        'anomalous': 1 if prediction['is_anomaly'] else 0
-    }
 
 def poll_model_status():
     while True:
