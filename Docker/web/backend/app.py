@@ -188,19 +188,21 @@ def poll_model_status():
         socketio.sleep(5)
 
 
+@socketio.on('train_model')
+def train_model(data):
+    if 'startDate' not in data or 'endDate' not in data:
+        emit('model_response', {"message": "startDate and endDate are required"}, broadcast=True)
+        return
 
-@app.route('/train_model', methods=['POST'])
-def train_model():
-    data = request.json
     try:
         response = requests.post(f'{DATA_PROCESSING_URL}/train', json=data)
         if response.status_code == 202:
             threading.Thread(target=poll_model_status).start()
-            return jsonify({"message": "Model training initiated"}), 202
+            emit('model_response', {"message": "Model training initiated"}, broadcast=True)
         else:
-            return jsonify({"message": "Failed to initiate model training"}), response.status_code
+            emit('model_response', {"message": "Failed to initiate model training"}, broadcast=True)
     except requests.RequestException as e:
-        return jsonify({"message": f"Error communicating with model service: {str(e)}"}), 500
+        emit('model_response', {"message": f"Error communicating with model service: {str(e)}"}, broadcast=True)
 
 @app.route('/model_status', methods=['GET'])
 def get_model_status():

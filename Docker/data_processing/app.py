@@ -548,14 +548,15 @@ def train_model(data):
             logging.info(f"Model {MODEL_NAME} is registered.")
     except requests.RequestException as e:
         logging.error(f"Error checking existing model registration: {e}")
+    features_list = [packet['features'] for packet in data]
     
     for attempt in range(max_retries):
         try:
             url = f"{TORCHSERVE_REQUESTS_URL}/predictions/{MODEL_NAME}"
             headers = {'X-Request-Type': 'train'}
             
-            logging.info(f"Sending model training request with {data} (attempt {attempt + 1})")
-            response = requests.post(url, json=data, headers=headers)
+            logging.info(f"Sending model training request with {features_list} (attempt {attempt + 1})")
+            response = requests.post(url, json=features_list, headers=headers)
             response.raise_for_status()
             
             if response.status_code == 200:
