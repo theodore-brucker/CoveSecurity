@@ -76,6 +76,9 @@ services:
       - "8080:8080"
       - "8081:8081"
       - "8082:8082"
+    environment:
+      - EARLY_STOPPING_THRESHOLD=.001
+      - NUM_EPOCHS=100
     volumes:
       - ./model_store:/home/model-server/model-store
       - scaler_data:/home/model-server/scaler_data
@@ -145,7 +148,7 @@ services:
       - TORCHSERVE_REQUESTS=http://localhost:8080
       - TORCHSERVE_MANAGEMENT=http://localhost:8081
       - TORCHSERVE_METRICS=http://localhost:8082
-      - ANOMALY_THRESHOLD=1
+      - ANOMALY_THRESHOLD=.5
       - WEB_BACKEND_URL=http://localhost:5000
 
       - FLASK_PORT=5001 # Where this app is going to be served on http://172.17.0.1

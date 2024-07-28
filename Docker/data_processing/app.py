@@ -642,11 +642,11 @@ def prediction_thread():
                         anomaly = False
                     else:
                         anomaly = True
-                        output = {
-                            "packet_id": str(packet_id),
-                            "reconstruction_error": float(result['reconstruction_error']),
-                            "is_anomaly": bool(anomaly)
-                        }
+                    output = {
+                        "packet_id": str(packet_id),
+                        "reconstruction_error": float(result['reconstruction_error']),
+                        "is_anomaly": bool(anomaly)
+                    }
                     producer.produce(PREDICTIONS_TOPIC, key=str(packet_id), value=json.dumps(output))                
                 producer.flush()
                 logging.info(f"Produced predictions for {len(anomaly_results)} packets")

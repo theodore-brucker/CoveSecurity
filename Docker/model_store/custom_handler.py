@@ -9,7 +9,7 @@ from memory_autoencoder import MEMAE
 from utils import PacketBuffer, PacketSequenceDataset
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class PacketAnomalyDetector(BaseHandler):
@@ -36,8 +36,8 @@ class PacketAnomalyDetector(BaseHandler):
         self.model = MEMAE().to(self.device)
         logger.info(f"Model created and moved to device: {self.device}")
         
-        self.packet_buffer = PacketBuffer(max_size=920, feature_dim=self.feature_dim)
-        logger.info(f"Packet buffer created with max_size=920 and feature_dim={self.feature_dim}")
+        self.packet_buffer = PacketBuffer(max_size=32, feature_dim=self.feature_dim)
+        logger.info(f"Packet buffer created with max_size=32 and feature_dim={self.feature_dim}")
         
         # Load the latest model weights if available
         #self.load_latest_model(model_dir)
@@ -60,7 +60,7 @@ class PacketAnomalyDetector(BaseHandler):
         return padded_seqs, lengths
 
     def preprocess(self, data):
-        logger.info("Starting preprocessing")
+        logger.debug("Starting preprocessing")
 
         if isinstance(data, list) and isinstance(data[0], dict) and 'body' in data[0]:
             # Training data format
@@ -84,7 +84,7 @@ class PacketAnomalyDetector(BaseHandler):
         logger.debug(f"Packet buffer size after processing: {len(self.packet_buffer)}")
 
         if len(self.packet_buffer) < self.sequence_length:
-            logger.warning(f"Not enough packets in buffer. Current size: {len(self.packet_buffer)}, Required: {self.sequence_length}")
+            logger.debug(f"Not enough packets in buffer. Current size: {len(self.packet_buffer)}, Required: {self.sequence_length}")
             return None
 
         dataset = PacketSequenceDataset(self.packet_buffer, self.sequence_length, self.feature_dim)
@@ -119,7 +119,7 @@ class PacketAnomalyDetector(BaseHandler):
 
     def inference(self, dataloader):
         self.load_latest_weights()
-        logger.info("Starting inference with weights: %s", self.weights_file)
+        logger.debug("Starting inference with weights: %s", self.weights_file)
         self.model.eval()
         results = []
         with torch.no_grad():
@@ -132,7 +132,7 @@ class PacketAnomalyDetector(BaseHandler):
                 # Unpack batch into individual packets
                 for i in range(batch.shape[0]):
                     results.append((batch[i], output[i]))
-        logger.info(f"Inference completed. Total packets processed: {len(results)}")
+        logger.debug(f"Inference completed. Total packets processed: {len(results)}")
         return results
 
     def postprocess(self, inference_outputs):
@@ -151,7 +151,7 @@ class PacketAnomalyDetector(BaseHandler):
         return anomaly_results
 
     def handle(self, data, context):
-        logger.info("Handling new request")
+        logger.debug("Handling new request")
         if not self.initialized:
             logger.info("Model not initialized. Initializing now.")
             self.initialize(context)
@@ -165,21 +165,22 @@ class PacketAnomalyDetector(BaseHandler):
                 logger.info(f"Training request handled successfully")
                 return response
             else:
-                logger.info("Received inference request")
+                logger.debug("Received inference request")
                 dataloader = self.preprocess(data)  # Call self.preprocess here
                 if dataloader is None:
                     return [json.dumps({"status": "error", "message": "Not enough data for inference"})]
                 
                 inference_outputs = self.inference(dataloader)
                 anomaly_results = self.postprocess(inference_outputs)
-                
+                logger.info(f"Anomaly results: {anomaly_results}")
                 response = {
                     "anomaly_results": anomaly_results,
                     "weights_file": self.weights_file or "No weights file loaded"
                 }
                 
                 logger.debug(f"Responding to inference with: {response}")
-                logger.info("Inference request handled successfully")
+                logger.debug("Inference request handled successfully")
+                self.packet_buffer.clear()
                 return [json.dumps(response)]
         except Exception as e:
             logger.error(f"Error handling request: {str(e)}", exc_info=True)
@@ -187,6 +188,10 @@ class PacketAnomalyDetector(BaseHandler):
 
     def train(self, data, context):
         logger.info("Starting model training")
+
+        num_epochs = int(os.getenv('NUM_EPOCHS', 10))
+        early_stopping_threshold = float(os.getenv('EARLY_STOPPING_THRESHOLD', 0.01))
+        
         self.model.train()
         optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
         
@@ -197,26 +202,42 @@ class PacketAnomalyDetector(BaseHandler):
         total_loss = 0
         num_batches = 0
 
-        for batch, lengths in dataloader:
-            logger.debug(f"Training - Batch datatype: {type(batch)}")
-            logger.debug(f"Training - Batch size: {batch.shape}")
-            
-            if batch.size(0) < 2:  # Skip batches with size less than 2
-                continue
+        for epoch in range(1, num_epochs + 1):
+            logger.info(f"Epoch {epoch} started")
+            epoch_loss = 0
 
-            optimizer.zero_grad()
+            for batch_idx, (batch, lengths) in enumerate(dataloader):
+                logger.debug(f"Training - Batch datatype: {type(batch)}")
+                logger.debug(f"Training - Batch size: {batch.shape}")
+                
+                if batch.size(0) < 2:  # Skip batches with size less than 2
+                    continue
+
+                optimizer.zero_grad()
+                
+                # Move batch to the correct device
+                batch = batch.to(self.device)
+                
+                outputs, att = self.model(batch)
+                loss = self.model.compute_loss((outputs, att), batch)
+                
+                loss.backward()
+                optimizer.step()
+                
+                total_loss += loss.item()
+                epoch_loss += loss.item()
+                num_batches += 1
+                
+                logger.info(f"Epoch {epoch}, Batch {batch_idx+1}, Loss: {loss.item()}")
+
             
-            # Move batch to the correct device
-            batch = batch.to(self.device)
-            
-            outputs, att = self.model(batch)
-            loss = self.model.compute_loss((outputs, att), batch)
-            
-            loss.backward()
-            optimizer.step()
-            
-            total_loss += loss.item()
-            num_batches += 1
+            average_epoch_loss = epoch_loss / num_batches if num_batches > 0 else 0
+            logger.info(f"Epoch {epoch} completed. Average loss: {average_epoch_loss}")
+
+            # Early stopping check
+            if average_epoch_loss < early_stopping_threshold:
+                logger.info(f"Early stopping triggered at epoch {epoch} with average loss {average_epoch_loss}")
+                break
 
         average_loss = total_loss / num_batches if num_batches > 0 else 0
         logger.info(f"Training completed. Average loss: {average_loss}")

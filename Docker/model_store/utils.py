@@ -1,6 +1,5 @@
 import numpy as np
 from collections import deque
-
 from torch.utils.data import Dataset
 import torch
 
@@ -43,8 +42,11 @@ class PacketSequenceDataset(Dataset):
         return max(0, len(self.packet_buffer) - self.sequence_length + 1)
 
     def __getitem__(self, idx):
+        # Return non-overlapping sequences
+        start_idx = idx * self.sequence_length
+        end_idx = start_idx + self.sequence_length
         sequence = self.packet_buffer.get_sequence(self.sequence_length)
-        if sequence is None:
+        if sequence is None or len(sequence) < self.sequence_length:
             raise IndexError("Not enough packets in buffer")
-        return torch.tensor(sequence[idx:idx + self.sequence_length], dtype=torch.float32)
+        return torch.tensor(sequence[start_idx:end_idx], dtype=torch.float32)
 
