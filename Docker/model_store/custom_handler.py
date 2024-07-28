@@ -2,13 +2,10 @@ import json
 import logging
 import os
 import time
-import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from torch.nn.utils.rnn import pad_sequence
 from ts.torch_handler.base_handler import BaseHandler
 from memory_autoencoder import MEMAE
-from memory_module import MemModule
 from utils import PacketBuffer, PacketSequenceDataset
 
 # Configure logging

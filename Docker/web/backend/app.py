@@ -1,16 +1,16 @@
 import logging
+import threading
 import time
 import os
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response, current_app
 from confluent_kafka import Consumer, KafkaException
 from confluent_kafka.admin import AdminClient
 from flask_cors import CORS
 import requests
+import json
+from flask_socketio import SocketIO,emit
 
-app = Flask(__name__)
-CORS(app)
-
-# Environment variables
+# ENVIRONMENT VARIABLES
 KAFKA_BROKER = os.getenv('KAFKA_BROKER', 'kafka:9092')
 RAW_TOPIC = os.getenv('RAW_TOPIC', 'raw_data')
 PROCESSED_TOPIC = os.getenv('PROCESSED_TOPIC', 'processed_data')
@@ -19,8 +19,33 @@ MAX_RETRIES = int(os.getenv('MAX_RETRIES', '5'))
 RETRY_DELAY = int(os.getenv('RETRY_DELAY', '2'))
 DATA_PROCESSING_URL = os.getenv('DATA_PROCESSING_URL', 'http://172.17.0.1:5001')
 
-# Configure logging
 logging.basicConfig(level=logging.DEBUG)
+
+class ConsumerManager:
+    def __init__(self):
+        self.consumers = {}
+        self.lock = threading.Lock()
+
+    def get_consumer(self, topic, group_id):
+        with self.lock:
+            key = f"{topic}-{group_id}"
+            if key not in self.consumers:
+                config = {
+                    'bootstrap.servers': KAFKA_BROKER,
+                    'auto.offset.reset': 'earliest'
+                }
+                config['group.id'] = group_id
+                try:
+                    self.consumers[key] = Consumer(config)
+                    self.consumers[key].subscribe([topic])
+                    logging.info(f"Successfully created consumer for topic: {topic}, group: {group_id}")
+                except KafkaException as e:
+                    logging.error(f"Failed to create consumer for topic {topic}, group {group_id}: {e}")
+                    raise
+            return self.consumers[key]
+
+consumer_manager = ConsumerManager()
+model_training = False
 
 def broker_accessible(broker_address, max_retries=MAX_RETRIES, retry_delay=RETRY_DELAY):
     for attempt in range(max_retries):
@@ -33,7 +58,7 @@ def broker_accessible(broker_address, max_retries=MAX_RETRIES, retry_delay=RETRY
         except Exception as e:
             logging.error(f"Error accessing broker: {e}")
             if attempt < max_retries - 1:
-                time.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+                time.sleep(retry_delay * (2 ** attempt))
     return False
 
 def topic_exists(broker_address, topic_name, max_retries=MAX_RETRIES, retry_delay=RETRY_DELAY):
@@ -47,142 +72,156 @@ def topic_exists(broker_address, topic_name, max_retries=MAX_RETRIES, retry_dela
                 return True
             else:
                 if attempt < max_retries - 1:
-                    time.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+                    time.sleep(retry_delay * (2 ** attempt))
                 logging.debug(f"Topic {topic_name} does not exist.")
         except Exception as e:
             logging.error(f"Error checking topic existence: {e}")
             if attempt < max_retries - 1:
-                time.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+                time.sleep(retry_delay * (2 ** attempt))
     return False
 
-# Check broker and topic
-if not broker_accessible(KAFKA_BROKER):
-    raise Exception("Kafka broker is not accessible")
-if not topic_exists(KAFKA_BROKER, RAW_TOPIC) or not topic_exists(KAFKA_BROKER, PREDICTION_TOPIC):
-    raise Exception("Required Kafka topics do not exist")
+app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
-# Initialize Kafka consumers
-raw_consumer = Consumer({
-    'bootstrap.servers': KAFKA_BROKER,
-    'group.id': 'raw_consumer_group',
-    'auto.offset.reset': 'earliest'
-})
+# Initialize SocketIO
+socketio = SocketIO(app, cors_allowed_origins="*")
 
-processed_consumer = Consumer({
-    'bootstrap.servers': KAFKA_BROKER,
-    'group.id': 'processed_consumer_group',
-    'auto.offset.reset': 'earliest'
-})
+@socketio.on('connect')
+def handle_connect():
+    logging.info("Client connected")
+    threading.Thread(target=emit_health_status).start()
+    threading.Thread(target=emit_raw_sample).start()
+    threading.Thread(target=emit_processed_sample).start()
+    threading.Thread(target=emit_anomaly_numbers).start()
 
-prediction_consumer = Consumer({
-    'bootstrap.servers': KAFKA_BROKER,
-    'group.id': 'prediction_consumer_group',
-    'auto.offset.reset': 'earliest'
-})
-
-# Subscribe to topics
-raw_consumer.subscribe([RAW_TOPIC])
-processed_consumer.subscribe([PROCESSED_TOPIC])
-prediction_consumer.subscribe([PREDICTION_TOPIC])
-
-from flask import Response
-import json
-
-@app.route('/anomaly_numbers', methods=['GET'])
-def get_anomaly_numbers():
-    def generate():
-        anomalous_count = 0
-        normal_count = 0
-        total_count = 0
-
+# Add these functions to continuously emit data
+def emit_health_status():
+    with app.app_context():
         while True:
-            msg = prediction_consumer.poll(1.0)
-            if msg is None:
-                yield f"data: {json.dumps({'total': total_count, 'normal': normal_count, 'anomalous': anomalous_count})}\n\n"
-                time.sleep(1)  # Wait for 1 second before polling again
-                continue
-            if msg.error():
-                if msg.error().code() == KafkaException._PARTITION_EOF:
-                    continue
-                else:
-                    logging.error(msg.error())
-                    continue
+            try:
+                health_status = {'status': 'OK'}  # Replace with actual health check
+                socketio.emit('health_update', health_status)
+            except Exception as e:
+                logging.error(f"Error in emit_health_status: {e}")
+            socketio.sleep(1)
 
-            prediction = json.loads(msg.value().decode('utf-8'))
-            total_count += 1
-            if prediction['is_anomaly']:
-                anomalous_count += 1
-            else:
-                normal_count += 1
+def emit_raw_sample():
+    with app.app_context():
+        while True:
+            try:
+                sample = get_raw_sample()
+                if sample:
+                    socketio.emit('raw_sample_update', {
+                        'time': sample['time'],
+                        'data': sample['data'][:20] + '...'  # Truncate the data for display
+                    })
+            except Exception as e:
+                logging.error(f"Error in emit_raw_sample: {e}")
+            socketio.sleep(1)
 
-            yield f"data: {json.dumps({'total': total_count, 'normal': normal_count, 'anomalous': anomalous_count})}\n\n"
+def emit_processed_sample():
+    with app.app_context():
+        while True:
+            try:
+                sample = get_processed_sample()
+                if sample:
+                    socketio.emit('processed_sample_update', {
+                        'timestamp': sample['timestamp'],
+                        'features': sample['features']
+                    })
+            except Exception as e:
+                logging.error(f"Error in emit_processed_sample: {e}")
+            socketio.sleep(1)
 
-    return Response(generate(), mimetype='text/event-stream')
+def emit_anomaly_numbers():
+    with app.app_context():
+        while True:
+            try:
+                numbers = get_anomaly_numbers()
+                if numbers:
+                    socketio.emit('anomaly_numbers_update', numbers)
+            except Exception as e:
+                logging.error(f"Error in emit_anomaly_numbers: {e}")
+            socketio.sleep(1)
 
-@app.route('/raw_sample', methods=['GET'])
 def get_raw_sample():
-    try:
-        msg = raw_consumer.poll(1.0)
-        if msg is None or msg.error():
-            return jsonify({'error': 'No messages in raw_data topic'}), 404
-        sample = {'key': msg.key().decode('utf-8'), 'value': msg.value().decode('utf-8')}
-    except Exception as e:
-        logging.error(f"Error consuming messages: {e}")
-        return jsonify({'error': 'Failed to fetch sample from raw_data topic'}), 500
+    consumer = consumer_manager.get_consumer(RAW_TOPIC, 'raw_consumer_group')
+    msg = consumer.poll(1.0)
+    if msg is None or msg.error():
+        return None
+    return json.loads(msg.value().decode('utf-8'))
 
-    return jsonify(sample)
-
-@app.route('/processed_sample', methods=['GET'])
 def get_processed_sample():
-    try:
-        msg = processed_consumer.poll(1.0)
-        if msg is None or msg.error():
-            return jsonify({'error': 'No messages in processed_data topic'}), 404
-        sample = {'key': msg.key().decode('utf-8'), 'value': msg.value().decode('utf-8')}
-    except Exception as e:
-        logging.error(f"Error consuming messages: {e}")
-        return jsonify({'error': 'Failed to fetch sample from processed_data topic'}), 500
+    consumer = consumer_manager.get_consumer(PROCESSED_TOPIC, 'processed_consumer_group')
+    msg = consumer.poll(1.0)
+    if msg is None or msg.error():
+        return None
+    return json.loads(msg.value().decode('utf-8'))
 
-    return jsonify(sample)
+def get_anomaly_numbers():
+    consumer = consumer_manager.get_consumer(PREDICTION_TOPIC, 'prediction_consumer_group')
+    msg = consumer.poll(1.0)
+    if msg is None or msg.error():
+        return None
+    prediction = json.loads(msg.value().decode('utf-8'))
+    return {
+        'total': 1,
+        'normal': 0 if prediction['is_anomaly'] else 1,
+        'anomalous': 1 if prediction['is_anomaly'] else 0
+    }
 
-@app.route('/prediction_sample', methods=['GET'])
-def get_prediction_sample():
-    try:
-        msg = prediction_consumer.poll(1.0)
-        if msg is None or msg.error():
-            return jsonify({'error': 'No messages in predictions topic'}), 404
-        sample = {'key': msg.key().decode('utf-8'), 'value': msg.value().decode('utf-8')}
-    except Exception as e:
-        logging.error(f"Error consuming messages: {e}")
-        return jsonify({'error': 'Failed to fetch sample from predictions topic'}), 500
+def poll_model_status():
+    while True:
+        try:
+            response = requests.get(f'{DATA_PROCESSING_URL}/status')
+            if response.status_code == 200:
+                status = response.json()
+                socketio.emit('training_status_update', status)
+                if status['status'] in ['completed', 'error']:
+                    break
+            else:
+                socketio.emit('training_status_update', {"status": "error", "message": "Failed to fetch status"})
+                break
+        except requests.RequestException as e:
+            socketio.emit('training_status_update', {"status": "error", "message": f"Error fetching status: {str(e)}"})
+            break
+        socketio.sleep(5)
 
-    return jsonify(sample)
 
-# Health check endpoint
-@app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({'status': 'healthy'})
-
-model_training = False
 
 @app.route('/train_model', methods=['POST'])
 def train_model():
     data = request.json
-    start_date = data.get('startDate')
-    end_date = data.get('endDate')
-
-    if not start_date or not end_date:
-        return jsonify({"message": "Start and end dates are required"}), 400
-
-    # Send request to data processing service
     try:
-        response = requests.post(f'{DATA_PROCESSING_URL}/train_model', json=data)
-        response.raise_for_status()
-        return jsonify(response.json()), 200
-    except requests.exceptions.RequestException as e:
-        return jsonify({"message": f"Error initiating model training: {str(e)}"}), 500
+        response = requests.post(f'{DATA_PROCESSING_URL}/train', json=data)
+        if response.status_code == 202:
+            threading.Thread(target=poll_model_status).start()
+            return jsonify({"message": "Model training initiated"}), 202
+        else:
+            return jsonify({"message": "Failed to initiate model training"}), response.status_code
+    except requests.RequestException as e:
+        return jsonify({"message": f"Error communicating with model service: {str(e)}"}), 500
+
+@app.route('/model_status', methods=['GET'])
+def get_model_status():
+    try:
+        response = requests.get(f'{DATA_PROCESSING_URL}/status')
+        if response.status_code == 200:
+            return jsonify(response.json())
+        else:
+            return jsonify({"status": "error", "message": "Failed to fetch status"}), 500
+    except requests.RequestException as e:
+        return jsonify({"status": "error", "message": f"Error fetching status: {str(e)}"}), 500
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', '5000'))
     logging.info(f"MLSEC web backend engine starting on 0.0.0.0:{port}")
-    app.run(host='0.0.0.0', port=port)
+    
+    if not broker_accessible(KAFKA_BROKER):
+        logging.error("Kafka broker is not accessible")
+    if not topic_exists(KAFKA_BROKER, RAW_TOPIC) or not topic_exists(KAFKA_BROKER, PREDICTION_TOPIC) or not topic_exists(KAFKA_BROKER, PROCESSED_TOPIC):
+        logging.error("Required Kafka topics not found")
+    else:
+        logging.info("Required Kafka topics are up")
+    
+    socketio.run(app, debug=True, host='0.0.0.0', port=port, allow_unsafe_werkzeug=True)

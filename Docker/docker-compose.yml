@@ -141,7 +141,6 @@ services:
       - RAW_TOPIC=raw_data
       - PROCESSED_TOPIC=processed_data
       - PREDICTIONS_TOPIC=predictions
-      
       - CAPTURE_INTERFACE=eth0
       - TORCHSERVE_REQUESTS=http://localhost:8080
       - TORCHSERVE_MANAGEMENT=http://localhost:8081

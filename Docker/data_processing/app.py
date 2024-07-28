@@ -221,6 +221,10 @@ def produce_raw_data(packets, broker_address):
             for packet in packets:
                 serialized_packet = serialize_packet(packet)
                 if serialized_packet:
+                    serialized_packet = {
+                        "time": packet.time,
+                        "data": raw(packet).hex()
+                    }
                     producer.produce(
                         topic=RAW_TOPIC,
                         key=str(packet.time),
@@ -306,13 +310,15 @@ def process_raw_data(broker_address):
                 else:
                     logging.error("Thread 2: Error consuming message: {}".format(msg.error()))
             else:
-                key = msg.key().decode("utf8")
-                value = json.loads(msg.value())
-                offset = msg.offset()
-                partition = msg.partition()
-                logging.debug("Thread 2: Consumed message with key: {}, value: {}".format(key, value))
+                value = json.loads(msg.value().decode('utf-8'))
 
-                features = process_packet(value)
+                # Ensure the consumed message has the expected format
+                if 'time' in value and 'data' in value:
+                    key = str(value['time'])
+                    features = process_packet(value)
+
+                logging.debug("Thread 2: Consumed message with key: {}, value: {}".format(key, value))
+                
                 if features:
                     try:
                         logging.debug("Thread 2: Extracted features: {}".format(features))
@@ -324,6 +330,10 @@ def process_raw_data(broker_address):
                         scaled_features = scaler.transform(df)
                         processed_value = scaled_features[0].tolist()
                         logging.debug("Thread 2: Scaled features: {}".format(processed_value))
+                        processed_value = {
+                            "timestamp": float(msg.timestamp()[1]),
+                            "features": scaled_features[0].tolist()
+                        }
                         producer.produce(
                             topic=PROCESSED_TOPIC,
                             key=key,
@@ -404,27 +414,43 @@ def process_packet(packet_summary):
 
 # Training and loading the model
 
+training_status = {
+    "status": "idle",
+    "progress": 0,
+    "message": ""
+}
+
+def update_training_status(status, progress, message):
+    global training_status
+    training_status = {
+        "status": status,
+        "progress": progress,
+        "message": message
+    }
+
+# Modify train_model_process function
 def train_model_process(start_date, end_date):
-    global model_training
-    logging.info(f"Starting model training process for data between {start_date} and {end_date}")
+    update_training_status("starting", 0, "Initiating model training process")
 
     try:
-        # 1. Fetch data from Kafka
+        update_training_status("checking_torchserve", 10, "Checking TorchServe availability")
+        if not check_torchserve_availability():
+            update_training_status("error", 0, "TorchServe is not available")
+            return
+
+        update_training_status("fetching_data", 20, "Fetching data from Kafka")
         data = fetch_data_from_kafka(start_date, end_date)
-        logging.info(f"Fetched {len(data)} records from Kafka")
+        update_training_status("data_fetched", 40, f"Fetched {len(data)} records from Kafka")
 
-        # 2. Train the model and set to inference mode
+        update_training_status("training", 50, "Training model")
         if train_and_set_inference_mode(data):
-
-            # 3. Start prediction thread if training and setting inference mode was successful
+            update_training_status("completed", 100, "Model training completed and set to inference mode")
             threading.Thread(target=prediction_thread).start()
         else:
-            logging.error("Failed to train model and set to inference mode")
-
+            update_training_status("error", 0, "Failed to train model and set to inference mode")
     except Exception as e:
         logging.error(f"Error during model training process: {str(e)}")
-    finally:
-        model_training = False
+        update_training_status("error", 0, f"Error during training: {str(e)}")
 
 def fetch_data_from_kafka(start_date, end_date):
     logging.info(f"Fetching data from Kafka between {start_date} and {end_date}")
@@ -597,7 +623,9 @@ def prediction_thread():
 
             try:
                 value = json.loads(msg.value().decode('utf-8'))
-                prediction = query_model(value)
+                # Ensure the consumed message has the expected format
+                if 'timestamp' in value and 'features' in value:
+                    prediction = query_model(value['features'])
                 
                 if "error" in prediction:
                     logging.error(f"Error in prediction: {prediction['error']}")
@@ -605,7 +633,7 @@ def prediction_thread():
                 
                 # Extract anomaly results and produce individual messages
                 anomaly_results = prediction.get('anomaly_results', [])
-                weights_file = prediction.get('weights_file')
+                #weights_file = prediction.get('weights_file')
 
                 for result in anomaly_results:
                     packet_id = result['packet_id']
@@ -613,17 +641,13 @@ def prediction_thread():
                         anomaly = False
                     else:
                         anomaly = True
-                    output = {
-                        "packet_id": packet_id,
-                        "reconstruction_error": result['reconstruction_error'],
-                        "is_anomaly": anomaly
-                        #"weights_file": weights_file
-                    }
-
-                    producer.produce(PREDICTIONS_TOPIC, key=str(packet_id), value=json.dumps(output))
-                
+                        output = {
+                            "packet_id": str(packet_id),
+                            "reconstruction_error": float(result['reconstruction_error']),
+                            "is_anomaly": bool(anomaly)
+                        }
+                    producer.produce(PREDICTIONS_TOPIC, key=str(packet_id), value=json.dumps(output))                
                 producer.flush()
-                
                 logging.info(f"Produced predictions for {len(anomaly_results)} packets")
             except json.JSONDecodeError as e:
                 logging.error(f"Error decoding message: {e}")
@@ -642,26 +666,21 @@ def prediction_thread():
 model_training = False
 app = Flask(__name__)
 
-@app.route('/train_model', methods=['POST'])
-def train_model_endpoint():
-    logging.info(f"Model training job received")
-    global model_training
-    if model_training:
-        return jsonify({"message": "Model training already in progress"}), 400
-    model_training = True
-
+@app.route('/train', methods=['POST'])
+def start_training():
     data = request.json
     start_date = data.get('startDate')
     end_date = data.get('endDate')
 
     if not start_date or not end_date:
-        model_training = False
         return jsonify({"message": "Start and end dates are required"}), 400
-    
-    logging.info(f"Training data from {start_date} - {end_date}")
 
     threading.Thread(target=train_model_process, args=(start_date, end_date)).start()
-    return jsonify({"message": "Model training started"}), 200
+    return jsonify({"message": "Model training initiated"}), 202
+
+@app.route('/status', methods=['GET'])
+def get_status():
+    return jsonify(training_status)
 
 @app.route('/health', methods=['GET'])
 def health_check():

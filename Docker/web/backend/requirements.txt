@@ -1,4 +1,6 @@
 flask
-confluent_kafka>=1.0.0
 flask_cors
+flask_sse
+flask_socketio
+confluent_kafka>=1.0.0
 requests
