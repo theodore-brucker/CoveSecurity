@@ -129,7 +129,7 @@ def capture_network_traffic_from_file(file_path, broker_address):
 
         logging.debug(f"Thread 1: Capturing network traffic from file: {file_path}")
         try:
-            packets = sniff(offline=file_path, count=1000)
+            packets = sniff(offline=file_path)
             if packets:
                 logging.debug(f"Thread 1: Captured {len(packets)} packets")
                 produce_raw_data(packets, broker_address)
@@ -192,7 +192,6 @@ def capture_live_traffic(interface, broker_address):
     except Exception as e:
         logging.error(f"Thread 1: Error capturing live traffic: {e}")
 
-# Utility function to serialize the packets
 def serialize_packet(packet):
     try:
         serialized = {
@@ -205,7 +204,6 @@ def serialize_packet(packet):
         logging.error(f"Thread 1: Error serializing packet: {e}")
         return None
 
-# Produces the raw data packets from capture to the raw data topic
 def produce_raw_data(packets, broker_address):
 
     try:
@@ -240,7 +238,6 @@ def produce_raw_data(packets, broker_address):
 
     if retry_count == max_retries:
         logging.error("Thread 1: Max retries reached. Failed to produce raw data.")
-
 
 ##################################################
 # PACKET PROCESSING - thread 2

@@ -8,7 +8,6 @@ WORKDIR /app
 
 # Install system dependencies
 RUN apt-get update && \
-    apt-get install -y telnet libpcap-dev tcpdump curl net-tools iputils-ping procps && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
