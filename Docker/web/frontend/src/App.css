@@ -18,18 +18,6 @@ body {
   padding: 0;
 }
 
-.resize-handle {
-  display: flex;
-  justify-content: flex-end;
-  padding: 5px;
-}
-
-.resize-handle button {
-  margin-left: 5px;
-  padding: 2px 5px;
-  font-size: 12px;
-}
-
 h1, h2, h3, h4, h5, h6 {
   font-family: 'Roboto', sans-serif;
   color: var(--text-primary);
@@ -165,6 +153,101 @@ h1, h2, h3, h4, h5, h6 {
   padding: 10px 20px;
 }
 
+.last-update-time {
+  font-size: 0.9em;
+  color: var(--text-secondary);
+}
+
+.last-update-time .time {
+  font-weight: bold;
+}
+
 .train-button:hover {
   background-color: #00FF7F;
+}
+
+.resizable-card {
+  position: relative;
+  background-color: var(--card-bg);
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+  transition: height 0.3s ease;
+  transition: transform 0.3s ease;
+}
+
+.resizable-card.collapsed {
+  height: auto !important;
+  overflow: hidden;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 20px;
+  cursor: pointer;
+  background-color: var(--deep-blue);
+}
+
+.card-header h2 {
+  margin: 0;
+}
+
+.toggle-icon {
+  font-size: 12px;
+}
+
+.card-content {
+  padding: 20px;
+  overflow-y: auto;
+  height: calc(100% - 50px); /* Adjust based on your header height */
+}
+
+.resize-handle {
+  position: absolute;
+  background-color: var(--bright-green);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.resize-handle.bottom {
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 5px;
+  cursor: ns-resize;
+}
+
+.resize-handle.right {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: ew-resize;
+}
+
+.resize-handle.corner {
+  bottom: 0;
+  right: 0;
+  width: 10px;
+  height: 10px;
+  cursor: nwse-resize;
+}
+
+.resizable-card:hover .resize-handle {
+  opacity: 0.5;
+}
+
+.resizable-card .resize-handle:hover {
+  opacity: 1;
+}
+
+.resizable-card:active {
+  cursor: grabbing;
+}
+
+.resizable-card.dragging {
+  opacity: 0.5;
+  transform: scale(1.05);
 }
