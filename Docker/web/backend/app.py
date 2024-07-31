@@ -3,32 +3,47 @@ import logging
 import threading
 import time
 import os
-from flask import Flask, jsonify, request, Response, current_app
+from flask import Flask, jsonify, request
 from confluent_kafka import Consumer, KafkaException
 from confluent_kafka.admin import AdminClient
 from flask_cors import CORS
 import requests
 import json
-from flask_socketio import SocketIO,emit
+from flask_socketio import SocketIO
+from werkzeug.utils import secure_filename
 
 # ENVIRONMENT VARIABLES
 KAFKA_BROKER = os.getenv('KAFKA_BROKER', 'kafka:9092')
 RAW_TOPIC = os.getenv('RAW_TOPIC', 'raw_data')
 PROCESSED_TOPIC = os.getenv('PROCESSED_TOPIC', 'processed_data')
 PREDICTION_TOPIC = os.getenv('PREDICTION_TOPIC', 'predictions')
+TRAINING_TOPIC = os.getenv('TRAINING_TOPIC', 'training_data')
+TRAINING_DATA_PATH = os.getenv('TRAINING_DATA_PATH', '/app/training_data')
+
 MAX_RETRIES = int(os.getenv('MAX_RETRIES', '5'))
 RETRY_DELAY = int(os.getenv('RETRY_DELAY', '2'))
 DATA_PROCESSING_URL = os.getenv('DATA_PROCESSING_URL', 'http://172.17.0.1:5001')
+ALLOWED_EXTENSIONS = {'pcap'}
 
 # GLOBAL VARIABLES
 last_raw_data_time = None
 last_processed_data_time = None
 last_prediction_data_time = None
+last_training_data_time = None
 model_training = False
 total_predictions = 0
 normal_predictions = 0
 anomalous_predictions = 0
+anomalous_packets = []
 logging.basicConfig(level=logging.DEBUG)
+
+##########################################
+# PCAP UPLOADER
+##########################################
+
+logging.info(f'TRAINING_DATA_PATH: {TRAINING_DATA_PATH}')
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
 ##########################################
@@ -37,18 +52,16 @@ logging.basicConfig(level=logging.DEBUG)
 
 
 class ConsumerManager:
-    def __init__(self):
+    def __init__(self, config):
         self.consumers = {}
         self.lock = threading.Lock()
+        self.consumer_config = config  # Store the base config
 
-    def get_consumer(self, topic, group_id):
+    def get_consumer(self, topic, group_id, config=None):
         with self.lock:
             key = f"{topic}-{group_id}"
             if key not in self.consumers:
-                config = {
-                    'bootstrap.servers': KAFKA_BROKER,
-                    'auto.offset.reset': 'earliest'
-                }
+                config = config or self.consumer_config.copy()
                 config['group.id'] = group_id
                 try:
                     self.consumers[key] = Consumer(config)
@@ -58,6 +71,15 @@ class ConsumerManager:
                     logging.error(f"Failed to create consumer for topic {topic}, group {group_id}: {e}")
                     raise
             return self.consumers[key]
+
+consumer_config = {
+    'bootstrap.servers': KAFKA_BROKER,
+    'auto.offset.reset': 'earliest',
+    'client.dns.lookup': 'use_all_dns_ips',
+    'broker.address.family': 'v4'
+}
+
+consumer_manager = ConsumerManager(consumer_config)
 
 def broker_accessible(broker_address, max_retries=MAX_RETRIES, retry_delay=RETRY_DELAY):
     for attempt in range(max_retries):
@@ -92,13 +114,9 @@ def topic_exists(broker_address, topic_name, max_retries=MAX_RETRIES, retry_dela
                 time.sleep(retry_delay * (2 ** attempt))
     return False
 
-consumer_manager = ConsumerManager()
-
-
 ##########################################
 # FLASK UTILITY
 ##########################################
-
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -118,22 +136,52 @@ def handle_connect():
     threading.Thread(target=emit_processed_sample).start()
     threading.Thread(target=emit_anomaly_numbers).start()
     threading.Thread(target=emit_data_flow_health).start()
+    threading.Thread(target=emit_anomalous_packets).start()
 
-@socketio.on('train_model')
-def train_model(data):
-    if 'startDate' not in data or 'endDate' not in data:
-        emit('model_response', {"message": "startDate and endDate are required"}, broadcast=True)
-        return
+@app.route('/training_start', methods=['POST'])
+def start_training():
+    try:
+        response = requests.post(f'{DATA_PROCESSING_URL}/training_start')
+        if response.status_code == 200:
+            return jsonify({"message": "Training job started"}), 200
+        else:
+            return jsonify({"error": "Failed to start training job"}), 500
+    except requests.RequestException as e:
+        return jsonify({"error": f"Error communicating with data processing service: {str(e)}"}), 500
+
+@app.route('/training_data', methods=['POST'])
+def training_data():
+    if 'file' in request.files:
+            file = request.files['file']
+            if file and allowed_file(file.filename):
+                filename = secure_filename(file.filename)
+                filepath = os.path.join(TRAINING_DATA_PATH, filename)
+                logging.info(f'Saving file to {filepath}')
+                file.save(filepath)
+                logging.info(f'Contents of {TRAINING_DATA_PATH} after save: {os.listdir(TRAINING_DATA_PATH)}')
+                data = {'file_path': filename}
+                training_type = 'pcap'
+            else:
+                logging.error('Invalid file type')
+                return jsonify({"error": "Invalid file type"}), 400
+    elif 'startDate' in request.form and 'endDate' in request.form:
+        data = {
+            'startDate': request.form['startDate'],
+            'endDate': request.form['endDate']
+        }
+        training_type = 'time_window'
+    else:
+        return jsonify({"error": "Missing required data"}), 400
 
     try:
-        response = requests.post(f'{DATA_PROCESSING_URL}/train', json=data)
+        response = requests.post(f'{DATA_PROCESSING_URL}/train_data', json=data)
         if response.status_code == 202:
-            threading.Thread(target=get_model_status).start()
-            emit('model_response', {"message": "Model training initiated"}, broadcast=True)
+            threading.Thread(target=emit_training_status).start()  # Start emitting training status
+            return jsonify({"message": f"Model training initiated with {training_type}"}), 202
         else:
-            emit('model_response', {"message": "Failed to initiate model training"}, broadcast=True)
+            return jsonify({"error": "Failed to initiate model training"}), 500
     except requests.RequestException as e:
-        emit('model_response', {"message": f"Error communicating with model service: {str(e)}"}, broadcast=True)
+        return jsonify({"error": f"Error communicating with model service: {str(e)}"}), 500
 
 @app.route('/model_status', methods=['GET'])
 def get_model_status():
@@ -150,23 +198,81 @@ def get_model_status():
 # GETTERS
 ##########################################
 
+def get_anomalous_packets():
+    global anomalous_packets, last_prediction_data_time
+    consumer = consumer_manager.get_consumer(PREDICTION_TOPIC, 'anomalous_prediction_consumer_group')
+    msg = consumer.poll(0.01)
+    if msg is None or msg.error():
+        return None
+    last_prediction_data_time = datetime.now()
+    prediction = json.loads(msg.value().decode('utf-8'))
+    if prediction['is_anomaly']:
+        anomalous_packets.append(prediction)
+        # Keep only the last 10 anomalous packets
+        anomalous_packets = anomalous_packets[-10:]
+    return anomalous_packets
+
 def get_raw_sample():
     global last_raw_data_time
     consumer = consumer_manager.get_consumer(RAW_TOPIC, 'raw_consumer_group')
-    msg = consumer.poll(1.0)
+    msg = consumer.poll(5.0)
     if msg is None or msg.error():
+        logging.error(f"Error fetching raw sample: {msg.error() if msg else 'No message'}")
         return None
     last_raw_data_time = datetime.now()
-    return json.loads(msg.value().decode('utf-8'))
+    try:
+        value = json.loads(msg.value().decode('utf-8'))
+        logging.info(value.get('human_readable', {}))
+        return {
+            'id': value['id'],
+            'time': value['time'],
+            'data': value['data'][:20] + '...',
+            'human_readable': value.get('human_readable', {})  # Ensure human_readable is included
+        }
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        logging.error(f"Error parsing raw sample: {e}")
+        return None
 
 def get_processed_sample():
     global last_processed_data_time
     consumer = consumer_manager.get_consumer(PROCESSED_TOPIC, 'processed_consumer_group')
-    msg = consumer.poll(1.0)
+    msg = consumer.poll(5.0)
     if msg is None or msg.error():
+        logging.error(f"Error fetching processed sample: {msg.error() if msg else 'No message'}")
         return None
     last_processed_data_time = datetime.now()
-    return json.loads(msg.value().decode('utf-8'))
+    try:
+        value = json.loads(msg.value().decode('utf-8'))
+        return {
+            'id': value['id'],
+            'timestamp': value['timestamp'],
+            'features': value['features'],
+            'human_readable': value.get('human_readable', {})  # Ensure human_readable is included
+        }
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        logging.error(f"Error parsing processed sample: {e}")
+        return None
+
+def get_training_sample():
+    global last_training_data_time
+    consumer_config = consumer_manager.consumer_config.copy()
+    consumer_config['auto.offset.reset'] = 'earliest'
+    consumer = consumer_manager.get_consumer(TRAINING_TOPIC, 'training_group', consumer_config)
+    max_empty_polls = 5
+    empty_poll_count = 0
+    while empty_poll_count < max_empty_polls:
+        msg = consumer.poll(5.0)
+        if msg is None or msg.error():
+            return None
+        last_training_data_time = datetime.now()
+        empty_poll_count = 0
+        value = json.loads(msg.value().decode('utf-8'))
+        return {
+            'id': value['id'],
+            'timestamp': value['timestamp'],
+            'features': value['features'],
+            'human_readable': value['human_readable']
+        }
 
 def get_anomaly_numbers():
     global last_prediction_data_time, total_predictions, normal_predictions, anomalous_predictions
@@ -199,35 +305,30 @@ def get_data_flow_health():
     raw_status, raw_time = get_status_with_time(last_raw_data_time)
     processed_status, processed_time = get_status_with_time(last_processed_data_time)
     prediction_status, prediction_time = get_status_with_time(last_prediction_data_time)
+    training_data_status, training_data_time = get_status_with_time(last_training_data_time)
     
     return {
         "raw": {"status": raw_status, "last_update": raw_time},
         "processed": {"status": processed_status, "last_update": processed_time},
+        "training": {"status": training_data_status, "last_update": training_data_time},
         "prediction": {"status": prediction_status, "last_update": prediction_time},
         "backend": {"status": "healthy", "last_update": current_time.isoformat()}
     }
 
-def get_model_status():
-    while True:
-        try:
-            response = requests.get(f'{DATA_PROCESSING_URL}/status')
-            if response.status_code == 200:
-                status = response.json()
-                socketio.emit('training_status_update', status)
-                if status['status'] in ['completed', 'error']:
-                    break
-            else:
-                socketio.emit('training_status_update', {"status": "error", "message": "Failed to fetch status"})
-                break
-        except requests.RequestException as e:
-            socketio.emit('training_status_update', {"status": "error", "message": f"Error fetching status: {str(e)}"})
-            break
-        socketio.sleep(5)
-
-
 ##########################################
 # EMITTERS
 ##########################################
+
+def emit_anomalous_packets():
+    with app.app_context():
+        while True:
+            try:
+                packets = get_anomalous_packets()
+                if packets:
+                    socketio.emit('anomalous_packets_update', packets)
+            except Exception as e:
+                logging.error(f"Error in emit_anomalous_packets: {e}")
+            socketio.sleep(0.01)
 
 # Add these functions to continuously emit data
 def emit_health_status():
@@ -247,8 +348,10 @@ def emit_raw_sample():
                 sample = get_raw_sample()
                 if sample:
                     socketio.emit('raw_sample_update', {
+                        'id': sample['id'],
                         'time': sample['time'],
-                        'data': sample['data'][:20] + '...'  # Truncate the data for display
+                        'data': sample['data'][:20] + '...',  # Truncate the data for display
+                        'human_readable': sample['human_readable']  # Include human_readable
                     })
             except Exception as e:
                 logging.error(f"Error in emit_raw_sample: {e}")
@@ -261,11 +364,29 @@ def emit_processed_sample():
                 sample = get_processed_sample()
                 if sample:
                     socketio.emit('processed_sample_update', {
+                        'id': sample['id'],
                         'timestamp': sample['timestamp'],
-                        'features': sample['features']
+                        'features': sample['features'],
+                        'human_readable': sample['human_readable']  # Include human_readable
                     })
             except Exception as e:
                 logging.error(f"Error in emit_processed_sample: {e}")
+            socketio.sleep(1)
+
+def emit_training_sample():
+    with app.app_context():
+        while True:
+            try:
+                sample = get_training_sample()
+                if sample:
+                    socketio.emit('processed_training_update', {
+                        'id': sample['id'],
+                        'timestamp': sample['timestamp'],
+                        'features': sample['features'],
+                        'human_readable': sample['human_readable']  # Include human_readable
+                    })
+            except Exception as e:
+                logging.error(f"Error in emit_training_sample: {e}")
             socketio.sleep(1)
 
 def emit_anomaly_numbers():
@@ -289,6 +410,24 @@ def emit_data_flow_health():
             except Exception as e:
                 logging.error(f"Error in emit_data_flow_health: {e}")
             socketio.sleep(5)
+
+def emit_training_status():
+    with app.app_context():
+        while True:
+            try:
+                response = requests.get(f'{DATA_PROCESSING_URL}/status')
+                if response.status_code == 200:
+                    status = response.json()
+                    socketio.emit('training_status_update', status)
+                    if status['status'] in ['completed', 'error']:
+                        break
+                else:
+                    socketio.emit('training_status_update', {"status": "error", "message": "Failed to fetch status"})
+                    break
+            except requests.RequestException as e:
+                socketio.emit('training_status_update', {"status": "error", "message": f"Error fetching status: {str(e)}"})
+                break
+            socketio.sleep(1)
 
 
 ##########################################

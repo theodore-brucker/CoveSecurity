@@ -23,6 +23,7 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONSUMER_MAX_POLL_INTERVAL_MS: 900000
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
       KAFKA_LOG_RETENTION_HOURS: 1
       KAFKA_DELETE_TOPIC_ENABLE: 'true'
@@ -50,7 +51,7 @@ services:
       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic raw_data --replication-factor 1 --partitions 1
       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic processed_data --replication-factor 1 --partitions 1
       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic predictions --replication-factor 1 --partitions 1
-
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic training_data --replication-factor 1 --partitions 1
       echo -e 'Successfully created the following topics:'
       kafka-topics --bootstrap-server kafka:9092 --list
       "
@@ -79,14 +80,17 @@ services:
       context: ./web/backend
     volumes:
       - ./web/backend:/app
+      - training_data:/app/training_data
     environment:  #Running in Docker-Network so can use DNS resolution to get everything except data_processing which needs host.docker.internal
       - KAFKA_BROKER=kafka:9092
       - RAW_TOPIC=raw_data
       - PROCESSED_TOPIC=processed_data
       - PREDICTION_TOPIC=predictions
+      - TRAINING_TOPIC=training_data
       - MAX_RETRIES=5
       - RETRY_DELAY=2
       - DATA_PROCESSING_URL=http://172.17.0.1:5001 #Address for the WSL instance, since DP runs on host mode instead of in docker network
+      - training_data:/app/training_data
     ports:
       - "5000:5000"
     networks:
@@ -119,18 +123,20 @@ services:
       - NET_RAW
     volumes:
       - scaler_data:/app/scaler_data
+      - training_data:/app/training_data
     environment: #Running on host (WSL) network so need to use exposed path to all containers in docker network...
       - KAFKA_BROKER=localhost:29092
       - RAW_TOPIC=raw_data
       - PROCESSED_TOPIC=processed_data
       - PREDICTIONS_TOPIC=predictions
+      - TRAINING_TOPIC=training_data
       - CAPTURE_INTERFACE=eth0
       - TORCHSERVE_REQUESTS=http://localhost:8080
       - TORCHSERVE_MANAGEMENT=http://localhost:8081
       - TORCHSERVE_METRICS=http://localhost:8082
       - ANOMALY_THRESHOLD=.5
       - WEB_BACKEND_URL=http://localhost:5000
-
+      - training_data:/app/training_data
       - FLASK_PORT=5001 # Where this app is going to be served on http://172.17.0.1
     depends_on:
       - kafka
@@ -145,3 +151,4 @@ networks:
 
 volumes:
   scaler_data:
+  training_data:

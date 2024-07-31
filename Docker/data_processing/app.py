@@ -1,36 +1,47 @@
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import uuid
 import pandas as pd
 import requests
 import logging
-from scapy.all import IP, TCP, UDP, ICMP, Ether, sniff, raw
+from decimal import Decimal
+from scapy.fields import EDecimal
+from scapy.all import IP, TCP, UDP, ICMP, Ether, sniff, raw, rdpcap, Raw
 from confluent_kafka import Producer, Consumer, KafkaError, KafkaException
 from confluent_kafka.admin import AdminClient
 import threading
 import time
-from decimal import Decimal
 from flask import Flask, jsonify, request
-import threading
 from sklearn.preprocessing import RobustScaler
 import netifaces
 
-APP_PATH = '/app/' 
-
-KAFKA_BROKER = os.getenv('KAFKA_BROKER')
-RAW_TOPIC = os.getenv('RAW_TOPIC')
-PROCESSED_TOPIC = os.getenv('PROCESSED_TOPIC')
-PREDICTIONS_TOPIC = os.getenv('PREDICTIONS_TOPIC')
-
+APP_PATH = os.getenv('APP_PATH', '/app/')
+KAFKA_BROKER = os.getenv('KAFKA_BROKER', 'kafka:9092')
+RAW_TOPIC = os.getenv('RAW_TOPIC', 'raw_data')
+PROCESSED_TOPIC = os.getenv('PROCESSED_TOPIC', 'processed_data')
+PREDICTIONS_TOPIC = os.getenv('PREDICTIONS_TOPIC', 'predictions')
+TRAINING_TOPIC = os.getenv('TRAINING_TOPIC', 'training_data')
 FLASK_PORT = int(os.getenv('FLASK_PORT', 5001))
 CAPTURE_INTERFACE = os.getenv('CAPTURE_INTERFACE', 'eth0')
-
 TORCHSERVE_REQUESTS_URL = os.getenv('TORCHSERVE_REQUESTS', 'http://localhost:8080')
 TORCHSERVE_MANAGEMENT_URL = os.getenv('TORCHSERVE_MANAGEMENT', 'http://localhost:8081')
 TORCHSERVE_METRICS_URL = os.getenv('TORCHSERVE_METRICS', 'http://localhost:8082')
 MODEL_NAME = os.getenv('MODEL_NAME', 'memory_autoencoder')
-SCALER_PATH = '/app/scaler_data/robust_scaler.pkl'
+SCALER_PATH = os.getenv('SCALER_PATH', '/app/scaler_data/robust_scaler.pkl')
+TRAINING_DATA_PATH = os.getenv('TRAINING_DATA_PATH', '/app/training_data')
 ANOMALY_THRESHOLD = os.getenv('ANOMALY_THRESHOLD', 1)
+
+protocol_map = {1: "ICMP", 6: "TCP", 17: "UDP", 2: "IGMP"} 
+is_training_period = False
+training_end_time = None
+thread_local = threading.local()
+
+def get_thread_name():
+    if not hasattr(thread_local, 'thread_name'):
+        thread_local.thread_name = threading.current_thread().name
+    return thread_local.thread_name
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(message)s',
@@ -66,15 +77,16 @@ class ProducerManager:
             return self.producers[topic]
 
 class ConsumerManager:
-    def __init__(self):
+    def __init__(self, config):
         self.consumers = {}
         self.lock = threading.Lock()
+        self.consumer_config = config  # Store the base config
 
-    def get_consumer(self, topic, group_id):
+    def get_consumer(self, topic, group_id, config=None):
         with self.lock:
             key = f"{topic}-{group_id}"
             if key not in self.consumers:
-                config = consumer_config.copy()
+                config = config or self.consumer_config.copy()
                 config['group.id'] = group_id
                 try:
                     self.consumers[key] = Consumer(config)
@@ -86,7 +98,6 @@ class ConsumerManager:
             return self.consumers[key]
 
 producer_manager = ProducerManager()
-consumer_manager = ConsumerManager()
 
 producer_config = {
     'bootstrap.servers': KAFKA_BROKER,
@@ -100,6 +111,8 @@ consumer_config = {
     'client.dns.lookup': 'use_all_dns_ips',
     'broker.address.family': 'v4'
 }
+
+consumer_manager = ConsumerManager(consumer_config)
 
 # Uses AdminClient to verify the existence of a topic
 def topic_exists(broker_address, topic_name):
@@ -116,36 +129,55 @@ def topic_exists(broker_address, topic_name):
 # TRAFFIC CAPTURE - thread 1
 ##################################################
 
-# The network traffic takes place on host machine, which writes in real time to a file
-# This function then reads that file and passes them to the producer for raw data topic
-def capture_network_traffic_from_file(file_path, broker_address):
-    logging.info(f"Thread 1: Connecting to live capture file")
-    while True:
-        logging.debug(f"Thread 1: Checking if capture file exists: {file_path}")
-        if not os.path.exists(file_path):
-            logging.error(f"Thread 1: File not found: {file_path}. Retrying in 5 seconds...")
-            time.sleep(5)
-            continue
-
-        logging.debug(f"Thread 1: Capturing network traffic from file: {file_path}")
-        try:
-            packets = sniff(offline=file_path)
-            if packets:
-                logging.debug(f"Thread 1: Captured {len(packets)} packets")
-                produce_raw_data(packets, broker_address)
-            else:
-                logging.info("Thread 1: No packets captured. Sleeping before retrying...")
-                time.sleep(5)  # Wait before trying again
-        except FileNotFoundError:
-            logging.error(f"Thread 1: File not found: {file_path}. Retrying in 5 seconds...")
-            time.sleep(5)
-        except Exception as e:
-            logging.error(f"Thread 1: Error capturing traffic: {e}. Retrying in 5 seconds...")
-            time.sleep(5)
+class CustomEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (Decimal, EDecimal)):
+            return float(obj)
+        elif isinstance(obj, bytes):
+            return obj.decode('utf-8', errors='replace')
+        elif hasattr(obj, '__str__'):
+            return str(obj)
+        return super(CustomEncoder, self).default(obj)
 
 def get_available_interfaces():
     logging.info('Getting available interfaces')
     return netifaces.interfaces()
+
+def start_training_period(end_time):
+    global is_training_period, training_end_time
+    is_training_period = True
+    training_end_time = end_time
+    logging.info(f"Training period started, will end at {end_time}")
+    
+    # Schedule the end of the training period
+    delay = (end_time - datetime.now(timezone.utc)).total_seconds()
+    threading.Timer(delay, end_training_period).start()
+
+def end_training_period():
+    global is_training_period, training_end_time
+    is_training_period = False
+    training_end_time = None
+    logging.info("Training period ended")
+
+def process_time_window(start_date, end_date):
+    global is_training_period, training_end_time
+    
+    # Convert start_date and end_date to datetime objects if they're not already
+    if isinstance(start_date, (int, float)):
+        start_date = datetime.fromtimestamp(start_date / 1000, timezone.utc)
+    if isinstance(end_date, (int, float)):
+        end_date = datetime.fromtimestamp(end_date / 1000, timezone.utc)
+    
+    current_time = datetime.now(timezone.utc)
+    
+    if start_date > current_time:
+        # Schedule the start of the training period
+        delay = (start_date - current_time).total_seconds()
+        threading.Timer(delay, start_training_period, args=[end_date]).start()
+        logging.info(f"Training period scheduled to start at {start_date}")
+    else:
+        # Start the training period immediately
+        start_training_period(end_date)
 
 def check_interface(interface):
     available_interfaces = get_available_interfaces()
@@ -183,74 +215,91 @@ def check_ports(interface, ports, retry_interval=5):
         logging.info(f"No traffic detected on ports {ports} for interface {interface}. Retrying in {retry_interval} seconds...")
         time.sleep(retry_interval)
 
-def capture_live_traffic(interface, broker_address):
+def capture_live_traffic(interface):
     if not check_ports(interface, [80, 443]):
-        logging.error(f"Ports are not being forwarded to interface {interface}")
+        logging.error(f"[TrafficCaptureThread] Ports are not being forwarded to interface {interface}")
         return
     try:
-        sniff(iface=interface, prn=lambda x: produce_raw_data(x, broker_address), store=0)
-    except Exception as e:
-        logging.error(f"Thread 1: Error capturing live traffic: {e}")
+        def packet_callback(packet):
+            logging.debug(f"[TrafficCaptureThread] Captured packet type: {type(packet)}")
+            logging.debug(f"[TrafficCaptureThread] Packet summary: {packet.summary()}")
+            produce_raw_data([packet])
 
-def serialize_packet(packet):
+        sniff(iface=interface, prn=packet_callback, store=0)
+    except Exception as e:
+        logging.error(f"[TrafficCaptureThread] Error capturing live traffic: {e}")
+
+def generate_unique_id():
+    return str(uuid.uuid4())
+
+def read_pcap(file_path, broker_address):
+    logging.info(f"Processing uploaded PCAP file: {file_path}")
     try:
+        packets = rdpcap(file_path)
+        logging.info(f"Successfully unpacked {len(packets)} packets from training file")
+        produce_raw_data([(packet, True) for packet in packets])  # Mark all packets as training data
+    except Exception as e:
+        logging.error(f"Error processing uploaded PCAP: {e}")
+
+##################################################
+# PACKET PROCESSING
+##################################################
+
+def serialize_packet(packet, is_training=False):
+    thread_name = get_thread_name()
+    logging.debug(f"[{thread_name}] Serializing packet of type: {type(packet)}")
+
+    if isinstance(packet, tuple) and len(packet) == 2:
+        packet, is_training = packet
+
+    try:
+        features, human_readable = process_packet(packet)
+        if features is None or human_readable is None:
+            logging.warning(f"[{thread_name}] Unable to process packet, skipping serialization")
+            return None
+        
         serialized = {
-            "time": packet.time,
-            "data": raw(packet).hex()
+            "id": generate_unique_id(),
+            "time": float(packet.time),
+            "data": raw(packet).hex(),
+            "is_training": is_training,
+            "human_readable": human_readable
         }
-        logging.debug(f"Thread 1: Serialized packet: {serialized}")
+        logging.debug(f"[{thread_name}] Serialized packet: {serialized}")
         return serialized
     except Exception as e:
-        logging.error(f"Thread 1: Error serializing packet: {e}")
+        logging.error(f"[{thread_name}] Error serializing packet: {e}")
         return None
 
-def produce_raw_data(packets, broker_address):
+def produce_raw_data(packets):
+    thread_name = get_thread_name()
+    logging.debug(f"[{thread_name}] Producing {len(packets)} to {RAW_TOPIC}")
+    producer = producer_manager.get_producer(RAW_TOPIC)
+    
+    for packet in packets:
+        logging.debug(f"[{thread_name}] Processing packet type: {type(packet)}")
+        
+        current_time = datetime.now(timezone.utc)
+        is_training = is_training_period and (training_end_time is None or current_time <= training_end_time)
+        
+        serialized_packet = serialize_packet(packet, is_training)
+        if serialized_packet:
+            try:
+                producer.produce(
+                    RAW_TOPIC,
+                    key=serialized_packet['id'],
+                    value=json.dumps(serialized_packet, cls=CustomEncoder)
+                )
+                producer.poll(0)
+            except Exception as e:
+                logging.error(f"[{thread_name}] Error producing raw data: {e}")
+        else:
+            logging.warning(f"[{thread_name}] Skipping packet due to serialization failure")
+    
+    logging.debug(f"[{thread_name}] Produced {len(packets)} to {RAW_TOPIC}: {packets}")
+    producer.flush()
 
-    try:
-        producer = producer_manager.get_producer(RAW_TOPIC)
-    except KafkaException as e:
-        logging.error(f"Thread 1: Failed to get producer for {RAW_TOPIC}: {e}")
-        return
-    retry_count = 0
-    max_retries = 5
-
-    while retry_count < max_retries:
-        try:
-            for packet in packets:
-                serialized_packet = serialize_packet(packet)
-                if serialized_packet:
-                    serialized_packet = {
-                        "time": packet.time,
-                        "data": raw(packet).hex()
-                    }
-                    producer.produce(
-                        topic=RAW_TOPIC,
-                        key=str(packet.time),
-                        value=json.dumps(serialized_packet, cls=CustomEncoder)
-                    )
-            producer.flush()
-            logging.debug("Thread 1: Finished producing raw data to Kafka")
-            break
-        except:
-            logging.error(f"Thread 1: Failed to produce raw data")
-            retry_count += 1
-            time.sleep(2 ** retry_count)  # Exponential backoff
-
-    if retry_count == max_retries:
-        logging.error("Thread 1: Max retries reached. Failed to produce raw data.")
-
-##################################################
-# PACKET PROCESSING - thread 2
-##################################################
-
-class CustomEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, Decimal):
-            return str(obj)
-        return super(CustomEncoder, self).default(obj)
-
-
-def fit_scaler(broker_address, sample_size=1000):    
+def fit_scaler(sample_size=1000):
     consumer = consumer_manager.get_consumer(RAW_TOPIC, 'scaler_fitting')
     features_list = []
     while len(features_list) < sample_size:
@@ -261,14 +310,17 @@ def fit_scaler(broker_address, sample_size=1000):
             continue
         
         value = json.loads(msg.value())
-        features = process_packet(value)
+        features, _ = process_packet(value)
         if features:
             features_list.append(features)
     
-    df = pd.DataFrame(features_list, columns=['src_ip', 'src_port', 'dst_ip', 'dst_port', 'protocol', 'flags'])
-    scaler = RobustScaler()
-    scaler.fit(df)
-    return scaler, df
+    if features_list and all(len(features) == 6 for features in features_list):
+        df = pd.DataFrame(features_list, columns=['src_ip', 'src_port', 'dst_ip', 'dst_port', 'protocol', 'flags'])
+        scaler = RobustScaler()
+        scaler.fit(df)
+        return scaler, df
+    else:
+        raise ValueError("Insufficient or incorrect feature data to create DataFrame")
 
 def update_scaler(scaler, new_data, current_data):
     combined_data = pd.concat([current_data, new_data], ignore_index=True)
@@ -276,19 +328,20 @@ def update_scaler(scaler, new_data, current_data):
     updated_scaler.fit(combined_data)
     return updated_scaler, combined_data
 
-def process_raw_data(broker_address):
+def process_raw_data():
     logging.info('Thread 2: Starting raw data processing')
     consumer = consumer_manager.get_consumer(RAW_TOPIC, 'network_data')
 
     try:
-        producer = producer_manager.get_producer(PROCESSED_TOPIC)
+        processed_producer = producer_manager.get_producer(PROCESSED_TOPIC)
+        training_producer = producer_manager.get_producer(TRAINING_TOPIC)
     except KafkaException as e:
-        logging.error(f"Thread 2: Failed to get producer for {PROCESSED_TOPIC}: {e}")
+        logging.error(f"Thread 2: Failed to get producers: {e}")
         return
     
     # Fit the scaler on initial sample of data
     initial_sample_size = 100
-    scaler, current_data = fit_scaler(broker_address, sample_size=initial_sample_size)
+    scaler, current_data = fit_scaler(sample_size=initial_sample_size)
     logging.info("Thread 2: Scaler fitted on initial sample data")
 
     messages_processed = 0
@@ -296,7 +349,6 @@ def process_raw_data(broker_address):
     new_data = []
 
     try:
-        logging.info(f"Thread 2: Producing to {PROCESSED_TOPIC}")
         while True:
             msg = consumer.poll(10)
             if msg is None:
@@ -309,124 +361,145 @@ def process_raw_data(broker_address):
             else:
                 value = json.loads(msg.value().decode('utf-8'))
 
-                # Ensure the consumed message has the expected format
-                if 'time' in value and 'data' in value:
-                    key = str(value['time'])
-                    features = process_packet(value)
+                if 'id' in value and 'time' in value and 'data' in value and 'is_training' in value and 'human_readable' in value:
+                    unique_id = value['id']
+                    is_training = value['is_training']
+                    features, _ = process_packet(value)
 
-                logging.debug("Thread 2: Consumed message with key: {}, value: {}".format(key, value))
-                
-                if features:
-                    try:
-                        logging.debug("Thread 2: Extracted features: {}".format(features))
-                        # Ensure the DataFrame only includes the relevant columns
-                        ordered_columns = ['src_ip', 'src_port', 'dst_ip', 'dst_port', 'protocol', 'flags']
-                        df = pd.DataFrame([features], columns=ordered_columns)
-                        
-                        # Transform the features using the current scaler
-                        scaled_features = scaler.transform(df)
-                        processed_value = scaled_features[0].tolist()
-                        logging.debug("Thread 2: Scaled features: {}".format(processed_value))
-                        processed_value = {
-                            "timestamp": float(msg.timestamp()[1]),
-                            "features": scaled_features[0].tolist()
-                        }
-                        producer.produce(
-                            topic=PROCESSED_TOPIC,
-                            key=key,
-                            value=json.dumps(processed_value, cls=CustomEncoder),
-                        )
-                        producer.flush()
-                        consumer.commit(msg)
-                        logging.debug("Thread 2: Produced processed packet to {} topic".format(PROCESSED_TOPIC))
+                    if features:
+                        try:
+                            logging.debug("Thread 2: Extracted features: {}".format(features))
+                            # Ensure the DataFrame only includes the relevant columns
+                            ordered_columns = ['src_ip', 'src_port', 'dst_ip', 'dst_port', 'protocol', 'flags']
+                            df = pd.DataFrame([features], columns=ordered_columns)
+                            
+                            # Transform the features using the current scaler
+                            scaled_features = scaler.transform(df)
+                            processed_value = {
+                                "id": unique_id,
+                                "timestamp": float(msg.timestamp()[1]),
+                                "features": scaled_features[0].tolist(),
+                                "is_training": is_training,
+                                "human_readable": value['human_readable']
+                            }
+                            processed_producer.produce(
+                                topic=PROCESSED_TOPIC,
+                                key=unique_id,
+                                value=json.dumps(processed_value, cls=CustomEncoder),
+                            )
+                            processed_producer.flush()
 
-                        # Update counters and collect new data for potential refitting
-                        messages_processed += 1
-                        new_data.append(features)
+                            if is_training:
+                                training_producer.produce(
+                                    topic=TRAINING_TOPIC,
+                                    key=unique_id,
+                                    value=json.dumps(processed_value, cls=CustomEncoder),
+                                )
+                                training_producer.flush()
 
-                        # Check if it's time to refit the scaler
-                        if messages_processed % refit_threshold == 0:
-                            logging.info("Thread 2: Refitting scaler with new data")
-                            new_data_df = pd.DataFrame(new_data, columns=ordered_columns)
-                            scaler, current_data = update_scaler(scaler, new_data_df, current_data)
-                            new_data = []  # Reset new_data after refitting
-                            logging.info("Thread 2: Scaler refitted successfully")
+                            consumer.commit(msg)
+                            logging.debug("Thread 2: Produced processed packet to {} topic".format(PROCESSED_TOPIC))
 
-                    except Exception as e:
-                        logging.error("Thread 2: Failed to process packet: {}".format(e))
+                            # Update counters and collect new data for potential refitting
+                            messages_processed += 1
+                            new_data.append(features)
+
+                            # Check if it's time to refit the scaler
+                            if messages_processed % refit_threshold == 0:
+                                logging.info("Thread 2: Refitting scaler with new data")
+                                new_data_df = pd.DataFrame(new_data, columns=ordered_columns)
+                                scaler, current_data = update_scaler(scaler, new_data_df, current_data)
+                                new_data = []  # Reset new_data after refitting
+                                logging.info("Thread 2: Scaler refitted successfully")
+
+                        except Exception as e:
+                            logging.error("Thread 2: Failed to process packet: {}".format(e))
+                else:
+                    logging.error("Thread 2: Received message with unexpected format")
     except Exception as e:
         logging.error("Thread 2: Failed to consume or produce messages: {}".format(e))
     finally:
-        producer.flush()
+        processed_producer.flush()
+        training_producer.flush()
 
 def scale_features(features, scaler):
     try:
-        scaled = scaler.fit_transform([features])[0]
+        scaled = scaler.transform([features])[0]
         logging.debug(f"Thread 2: Scaled features: {scaled}")
         return scaled
     except Exception as e:
         logging.error(f"Thread 2: Error scaling features: {e}")
         return None
 
-def process_packet(packet_summary):
-    def ip_to_hash(ip: str) -> int:
-        return int(hashlib.sha256(ip.encode()).hexdigest()[:8], 16)
+def ip_to_hash(ip: str) -> int:
+    return int(hashlib.sha256(ip.encode()).hexdigest()[:8], 16)
 
-    def flags_to_int(flags: str) -> int:
-        return sum((0x01 << i) for i, f in enumerate('FSRPAUEC') if f in flags)
+def flags_to_int(flags: str) -> int:
+    return sum((0x01 << i) for i, f in enumerate('FSRPAUEC') if f in flags)
 
-    def protocol_to_int(proto: int) -> int:
-        protocol_map = {1: 1, 6: 2, 17: 3, 2: 4}  # ICMP, TCP, UDP, IGMP
-        return protocol_map.get(proto, 0)
+def protocol_to_int(proto: int) -> int:
+    protocol_map = {1: 1, 6: 2, 17: 3, 2: 4}  # ICMP, TCP, UDP, IGMP
+    return protocol_map.get(proto, 0)
 
+def process_packet(packet):
+    thread_name = get_thread_name()
+    logging.debug(f"[{thread_name}] Processing packet of type: {type(packet)}")
     try:
-        packet = Ether(bytes.fromhex(packet_summary["data"]))
-        logging.debug("Thread 2: Created Ether packet: {}".format(packet.summary()))
+        if isinstance(packet, dict):
+            packet_data = bytes.fromhex(packet['data'])  # Convert hex string back to bytes
+            packet = Ether(packet_data)  # Convert bytes to Ether packet
+        if isinstance(packet, Raw):
+            packet = Ether(bytes(packet))  # Convert Raw packet to Ether packet
+        if isinstance(packet, Ether):
+            logging.debug(f"[{thread_name}] Processing Ether packet: {packet.summary()}")
+            return extract_features(packet)
+        else:
+            logging.warning(f"[{thread_name}] Unexpected input type: {type(packet)}")
+            return None, None
     except Exception as e:
-        logging.error("Thread 2: Error converting packet summary to Ether object: {}".format(e))
-        return None
+        logging.error(f"[{thread_name}] Error processing packet: {e}")
+        return None, None
 
+def extract_features(packet):
     if IP in packet:
         ip_layer = packet[IP]
         tcp_layer = packet[TCP] if TCP in packet else None
 
         features = {
-            'src_ip': ip_to_hash(ip_layer.src) if ip_layer else ip_to_hash("0.0.0.0"),
-            'dst_ip': ip_to_hash(ip_layer.dst) if ip_layer else ip_to_hash("0.0.0.0"),
-            'protocol': protocol_to_int(ip_layer.proto) if ip_layer else 0,
+            'src_ip': ip_to_hash(ip_layer.src),
+            'dst_ip': ip_to_hash(ip_layer.dst),
+            'protocol': protocol_to_int(ip_layer.proto),
             'flags': flags_to_int(tcp_layer.flags) if tcp_layer and hasattr(tcp_layer, 'flags') else 0,
             'src_port': tcp_layer.sport if tcp_layer else 0,
             'dst_port': tcp_layer.dport if tcp_layer else 0
         }
+        human_readable_protocol = protocol_map.get(ip_layer.proto, "Unknown")
+        human_readable = {
+            'src_ip': ip_layer.src,
+            'dst_ip': ip_layer.dst,
+            'protocol': human_readable_protocol,
+            'flags': tcp_layer.flags if tcp_layer and hasattr(tcp_layer, 'flags') else "",
+            'src_port': tcp_layer.sport if tcp_layer else 0,
+            'dst_port': tcp_layer.dport if tcp_layer else 0
+        }
 
-        logging.debug("Thread 2: Extracted features: {}".format(features))
-        return features
+        return features, human_readable
     else:
-        logging.debug("Thread 2: Non-IP packet received, cannot process")
-        return None
+        logging.debug(f"[{get_thread_name()}] Non-IP packet received, cannot process")
+        return None, None
 
 ##################################################
 # MODEL - thread 3
 ##################################################
 
-# Training and loading the model
-
+model_ready_event = threading.Event()
 training_status = {
     "status": "idle",
     "progress": 0,
     "message": ""
 }
 
-def update_training_status(status, progress, message):
-    global training_status
-    training_status = {
-        "status": status,
-        "progress": progress,
-        "message": message
-    }
-
-# Modify train_model_process function
-def train_model_process(start_date, end_date):
+def train_model_process():
     update_training_status("starting", 0, "Initiating model training process")
 
     try:
@@ -436,9 +509,9 @@ def train_model_process(start_date, end_date):
             return
 
         update_training_status("fetching_data", 20, "Fetching data from Kafka")
-        data = fetch_data_from_kafka(start_date, end_date)
+        data = fetch_training_data()
         update_training_status("data_fetched", 40, f"Fetched {len(data)} records from Kafka")
-
+        time.sleep(5)
         update_training_status("training", 50, "Training model")
         if train_and_set_inference_mode(data):
             update_training_status("completed", 100, "Model training completed and set to inference mode")
@@ -448,33 +521,6 @@ def train_model_process(start_date, end_date):
     except Exception as e:
         logging.error(f"Error during model training process: {str(e)}")
         update_training_status("error", 0, f"Error during training: {str(e)}")
-
-def fetch_data_from_kafka(start_date, end_date):
-    logging.info(f"Fetching data from Kafka between {start_date} and {end_date}")
-    consumer = consumer_manager.get_consumer(PROCESSED_TOPIC, 'model_training_group')
-
-    data = []
-    try:
-        while True:
-            msg = consumer.poll(1.0)
-            if msg is None:
-                continue
-            if msg.error():
-                logging.error(f"Consumer error: {msg.error()}")
-                continue
-
-            value = json.loads(msg.value().decode('utf-8'))
-            timestamp = msg.timestamp()[1]
-            logging.debug(timestamp)
-            if start_date <= timestamp <= end_date:
-                data.append(value)
-            elif timestamp > end_date:
-                break
-
-    finally:
-        pass
-
-    return data
 
 def check_torchserve_availability():
     max_retries = 5
@@ -490,17 +536,42 @@ def check_torchserve_availability():
     logging.error("TorchServe is not available after multiple attempts")
     return False
 
-def deregister_model(model_name, version):
-    try:
-        response = requests.delete(f"{TORCHSERVE_MANAGEMENT_URL}/models/{model_name}/{version}")
-        if response.status_code == 200:
-            logging.info(f"Successfully deregistered model {model_name} version {version}")
-        else:
-            logging.error(f"Error deregistering model {model_name} version {version}: {response.text}")
-    except requests.RequestException as e:
-        logging.error(f"Exception occurred while deregistering model {model_name} version {version}: {e}")
+def fetch_training_data():
+    logging.info("Fetching all unread data from training topic")
+    consumer_config = consumer_manager.consumer_config.copy()
+    consumer_config['auto.offset.reset'] = 'earliest'
+    consumer = consumer_manager.get_consumer(TRAINING_TOPIC, 'training_group', config=consumer_config)
 
-model_ready_event = threading.Event()
+    data = []
+    max_empty_polls = 5
+    empty_poll_count = 0
+
+    try:
+        while empty_poll_count < max_empty_polls:
+            msg = consumer.poll(1.0)  # Increased timeout to 1 second
+            if msg is None:
+                empty_poll_count += 1
+                logging.info(f"Empty poll {empty_poll_count}/{max_empty_polls}")
+                continue
+            if msg.error():
+                logging.error(f"Consumer error: {msg.error()}")
+                continue
+
+            try:
+                value = json.loads(msg.value().decode('utf-8'))
+                data.append(value)
+                empty_poll_count = 0  # Reset empty poll count on successful message
+                logging.debug(f"Received message: {value}")
+            except json.JSONDecodeError as e:
+                logging.error(f"Error decoding message: {e}")
+            except Exception as e:
+                logging.error(f"Unexpected error processing message: {e}")
+
+    finally:
+        consumer.close()
+    
+    logging.info(f"Fetched data of size {len(data)} from {TRAINING_TOPIC}")
+    return data
 
 def train_and_set_inference_mode(data):
     if not check_torchserve_availability():
@@ -545,6 +616,8 @@ def train_model(data):
             logging.info(f"Model {MODEL_NAME} is registered.")
     except requests.RequestException as e:
         logging.error(f"Error checking existing model registration: {e}")
+
+    # Extract features from the data
     features_list = [packet['features'] for packet in data]
     
     for attempt in range(max_retries):
@@ -552,7 +625,7 @@ def train_model(data):
             url = f"{TORCHSERVE_REQUESTS_URL}/predictions/{MODEL_NAME}"
             headers = {'X-Request-Type': 'train'}
             
-            logging.info(f"Sending model training request with {features_list} (attempt {attempt + 1})")
+            logging.info(f"Sending model training request with {len(features_list)} feature sets (attempt {attempt + 1})")
             response = requests.post(url, json=features_list, headers=headers)
             response.raise_for_status()
             
@@ -576,26 +649,13 @@ def train_model(data):
     
     return False
 
-# Making predictions
-
-def wait_for_model_ready():
-    logging.info("Waiting for model to be ready...")
-    model_ready_event.wait()  # Block until the event is set
-    logging.info("Model is ready")
-
-def query_model(data):
-    url = f"{TORCHSERVE_REQUESTS_URL}/predictions/{MODEL_NAME}"
-    
-    logging.info(f"Querying model with data: {data}")
-    try:
-        response = requests.post(url, json=data)
-        response.raise_for_status()
-        prediction = response.json()
-        logging.debug(f"Received prediction {prediction} using weights from: {prediction.get('weights_file')}")
-        return prediction
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Error querying model: {e}")
-        return {"error": "Failed to get prediction"}
+def update_training_status(status, progress, message):
+    global training_status
+    training_status = {
+        "status": status,
+        "progress": progress,
+        "message": message
+    }
 
 def prediction_thread():
     logging.info("Starting prediction thread")
@@ -622,31 +682,30 @@ def prediction_thread():
             try:
                 value = json.loads(msg.value().decode('utf-8'))
                 # Ensure the consumed message has the expected format
-                if 'timestamp' in value and 'features' in value:
+                if 'id' in value and 'features' in value:
                     prediction = query_model(value['features'])
                 
-                if "error" in prediction:
-                    logging.error(f"Error in prediction: {prediction['error']}")
-                    continue
-                
-                # Extract anomaly results and produce individual messages
-                anomaly_results = prediction.get('anomaly_results', [])
-                #weights_file = prediction.get('weights_file')
+                    if "error" in prediction:
+                        logging.error(f"Error in prediction: {prediction['error']}")
+                        continue
+                    
+                    # Extract anomaly results and produce individual messages
+                    anomaly_results = prediction.get('anomaly_results', [])
 
-                for result in anomaly_results:
-                    packet_id = result['packet_id']
-                    if float(result['reconstruction_error']) < float(ANOMALY_THRESHOLD):
-                        anomaly = False
-                    else:
-                        anomaly = True
-                    output = {
-                        "packet_id": str(packet_id),
-                        "reconstruction_error": float(result['reconstruction_error']),
-                        "is_anomaly": bool(anomaly)
-                    }
-                    producer.produce(PREDICTIONS_TOPIC, key=str(packet_id), value=json.dumps(output))                
-                producer.flush()
-                logging.info(f"Produced predictions for {len(anomaly_results)} packets")
+                    for result in anomaly_results:
+                        packet_id = value['id']  # Use the unique ID from the input
+                        reconstruction_error = float(result['reconstruction_error'])
+                        is_anomaly = reconstruction_error >= float(ANOMALY_THRESHOLD)
+                        output = {
+                            "packet_id": packet_id,
+                            "reconstruction_error": reconstruction_error,
+                            "is_anomaly": is_anomaly
+                        }
+                        producer.produce(PREDICTIONS_TOPIC, key=packet_id, value=json.dumps(output))                
+                    producer.flush()
+                    logging.debug(f"Produced prediction for packet {packet_id}")
+                else:
+                    logging.warning(f"Received message with unexpected format: {value}")
             except json.JSONDecodeError as e:
                 logging.error(f"Error decoding message: {e}")
             except Exception as e:
@@ -655,7 +714,27 @@ def prediction_thread():
     except KeyboardInterrupt:
         logging.info("Interrupted.")
     finally:
-        pass
+        consumer.close()
+
+def wait_for_model_ready():
+    logging.info("Waiting for model to be ready...")
+    model_ready_event.wait()  # Block until the event is set
+    logging.info("Model is ready")
+
+def query_model(data):
+    url = f"{TORCHSERVE_REQUESTS_URL}/predictions/{MODEL_NAME}"
+    
+    logging.debug(f"Querying model with data: {data}")
+    try:
+        response = requests.post(url, json=data)
+        response.raise_for_status()
+        prediction = response.json()
+        logging.debug(f"Received prediction {prediction} using weights from: {prediction.get('weights_file')}")
+        return prediction
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error querying model: {e}")
+        return {"error": "Failed to get prediction"}
+
 
 ##################################################
 # FLASK FOR MODEL TRAINING - thread 4
@@ -664,17 +743,27 @@ def prediction_thread():
 model_training = False
 app = Flask(__name__)
 
-@app.route('/train', methods=['POST'])
-def start_training():
+@app.route('/train_data', methods=['POST'])
+def train_data():
     data = request.json
-    start_date = data.get('startDate')
-    end_date = data.get('endDate')
+    if 'file_path' in data:
+        # Process PCAP file
+        file_path = os.path.join(TRAINING_DATA_PATH, data['file_path'])  # Use TRAINING_DATA_PATH
+        read_pcap(file_path, KAFKA_BROKER)
+    elif 'startDate' in data and 'endDate' in data:
+        # Process data within time window
+        start_date = datetime.fromtimestamp(int(data['startDate']) / 1000, timezone.utc)
+        end_date = datetime.fromtimestamp(int(data['endDate']) / 1000, timezone.utc)
+        process_time_window(start_date, end_date)
+    else:
+        return jsonify({"error": "Invalid training data provided"}), 400
 
-    if not start_date or not end_date:
-        return jsonify({"message": "Start and end dates are required"}), 400
+    return jsonify({"message": "Training data uploaded"}), 202
 
-    threading.Thread(target=train_model_process, args=(start_date, end_date)).start()
-    return jsonify({"message": "Model training initiated"}), 202
+@app.route('/training_start', methods=['POST'])
+def start_training_job():
+    threading.Thread(target=train_model_process).start()
+    return jsonify({"message": "Training job started"}), 200
 
 @app.route('/status', methods=['GET'])
 def get_status():
@@ -684,7 +773,6 @@ def get_status():
 def health_check():
     # Implement health check logic
     return jsonify({"status": "healthy"}), 200
-
 
 ##################################################
 # MAIN
@@ -700,12 +788,12 @@ def main():
     if CAPTURE_INTERFACE not in available_interfaces:
         logging.error(f"Specified interface {CAPTURE_INTERFACE} not found. Please choose from: {available_interfaces}")
         return
-
+    logging.info(CAPTURE_INTERFACE)
     threads = [
-        threading.Thread(target=capture_live_traffic, args=(CAPTURE_INTERFACE, KAFKA_BROKER)),
-        threading.Thread(target=process_raw_data, args=(KAFKA_BROKER,)),
-        threading.Thread(target=prediction_thread),
-        threading.Thread(target=app.run, kwargs={'host': '0.0.0.0', 'port': FLASK_PORT})
+        threading.Thread(name='TrafficCaptureThread', target=capture_live_traffic, args=(CAPTURE_INTERFACE,)),
+        threading.Thread(name='DataProcessingThread', target=process_raw_data),
+        threading.Thread(name='PredictionThread', target=prediction_thread),
+        threading.Thread(name='AppThread', target=app.run, kwargs={'host': '0.0.0.0', 'port': FLASK_PORT})
     ]
 
     for thread in threads:
