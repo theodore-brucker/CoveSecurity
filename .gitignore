@@ -99,7 +99,7 @@ htmlcov/
 
 # Ignore TorchServe logs and model-store
 logs/
-.pth 
+*.pth 
 
 # Ignore backend static and media files (customize if needed)
 staticfiles/
