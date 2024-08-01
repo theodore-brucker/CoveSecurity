@@ -362,7 +362,7 @@ def process_raw_data():
                 value = json.loads(msg.value().decode('utf-8'))
 
                 if 'id' in value and 'time' in value and 'data' in value and 'is_training' in value and 'human_readable' in value:
-                    unique_id = value['id']
+                    packet_id = value['id']
                     is_training = value['is_training']
                     features, _ = process_packet(value)
 
@@ -376,7 +376,7 @@ def process_raw_data():
                             # Transform the features using the current scaler
                             scaled_features = scaler.transform(df)
                             processed_value = {
-                                "id": unique_id,
+                                "id": packet_id,
                                 "timestamp": float(msg.timestamp()[1]),
                                 "features": scaled_features[0].tolist(),
                                 "is_training": is_training,
@@ -384,7 +384,7 @@ def process_raw_data():
                             }
                             processed_producer.produce(
                                 topic=PROCESSED_TOPIC,
-                                key=unique_id,
+                                key=packet_id,
                                 value=json.dumps(processed_value, cls=CustomEncoder),
                             )
                             processed_producer.flush()
@@ -392,7 +392,7 @@ def process_raw_data():
                             if is_training:
                                 training_producer.produce(
                                     topic=TRAINING_TOPIC,
-                                    key=unique_id,
+                                    key=packet_id,
                                     value=json.dumps(processed_value, cls=CustomEncoder),
                                 )
                                 training_producer.flush()
@@ -694,12 +694,14 @@ def prediction_thread():
 
                     for result in anomaly_results:
                         packet_id = value['id']  # Use the unique ID from the input
+                        packet_human_readable = value.get('human_readable', {})
                         reconstruction_error = float(result['reconstruction_error'])
                         is_anomaly = reconstruction_error >= float(ANOMALY_THRESHOLD)
                         output = {
-                            "packet_id": packet_id,
+                            "id": packet_id,
                             "reconstruction_error": reconstruction_error,
-                            "is_anomaly": is_anomaly
+                            "is_anomaly": is_anomaly,
+                            "human_readable": packet_human_readable
                         }
                         producer.produce(PREDICTIONS_TOPIC, key=packet_id, value=json.dumps(output))                
                     producer.flush()

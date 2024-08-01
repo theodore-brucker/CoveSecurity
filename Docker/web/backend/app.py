@@ -194,6 +194,20 @@ def get_model_status():
     except requests.RequestException as e:
         return jsonify({"status": "error", "message": f"Error fetching status: {str(e)}"}), 500
 
+@app.route('/anomalous_packets', methods=['GET'])
+def get_paginated_anomalous_packets():
+    page = int(request.args.get('page', 1))
+    per_page = 5
+    start = (page - 1) * per_page
+    end = start + per_page
+    packets = anomalous_packets[start:end]
+    return jsonify({
+        'packets': packets,
+        'total': len(anomalous_packets),
+        'page': page,
+        'per_page': per_page
+    })
+
 ##########################################
 # GETTERS
 ##########################################
@@ -203,13 +217,13 @@ def get_anomalous_packets():
     consumer = consumer_manager.get_consumer(PREDICTION_TOPIC, 'anomalous_prediction_consumer_group')
     msg = consumer.poll(0.01)
     if msg is None or msg.error():
-        return None
+        return anomalous_packets  # Return existing packets even if no new ones
     last_prediction_data_time = datetime.now()
     prediction = json.loads(msg.value().decode('utf-8'))
-    if prediction['is_anomaly']:
+    if prediction.get('is_anomaly'):
         anomalous_packets.append(prediction)
-        # Keep only the last 10 anomalous packets
-        anomalous_packets = anomalous_packets[-10:]
+        # Keep only the last 100 anomalous packets
+        anomalous_packets = anomalous_packets[-100:]
     return anomalous_packets
 
 def get_raw_sample():
@@ -222,7 +236,7 @@ def get_raw_sample():
     last_raw_data_time = datetime.now()
     try:
         value = json.loads(msg.value().decode('utf-8'))
-        logging.info(value.get('human_readable', {}))
+        logging.debug(f"Human readable features: {value.get('human_readable', {})}")
         return {
             'id': value['id'],
             'time': value['time'],
@@ -324,13 +338,14 @@ def emit_anomalous_packets():
         while True:
             try:
                 packets = get_anomalous_packets()
-                if packets:
-                    socketio.emit('anomalous_packets_update', packets)
+                socketio.emit('anomalous_packets_update', {
+                    'total': len(packets),
+                    'packets': packets[-5:]  # Send only the 5 most recent packets
+                })
             except Exception as e:
                 logging.error(f"Error in emit_anomalous_packets: {e}")
-            socketio.sleep(0.01)
+            socketio.sleep(1)
 
-# Add these functions to continuously emit data
 def emit_health_status():
     with app.app_context():
         while True:
