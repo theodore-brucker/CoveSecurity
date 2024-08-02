@@ -1,16 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { io } from "socket.io-client";
 import ResizableCard from './ResizableCard';
-
-//
-// MAIN COMPONENT
-// 
+import DataTable from './DataTable';
+import TruncatedData from './TruncatedData';
+import { truncateString } from '../utils/stringUtils';
 
 const Dashboard = () => {
-
-  //
-  // VARIABLES
-  //
+  // State variables
   const [rawSample, setRawSample] = useState(null);
   const [processedSample, setProcessedSample] = useState(null);
   const [anomalyNumbers, setAnomalyNumbers] = useState({ total: 0, normal: 0, anomalous: 0 });
@@ -29,66 +25,12 @@ const Dashboard = () => {
     training: { status: 'Unknown', last_update: null },
     prediction: { status: 'Unknown', last_update: null }
   });
-
-  // VARIABLES FOR ANOMALOUS PACKET VIEWING
   const [currentPage, setCurrentPage] = useState(1);
   const [displayedPackets, setDisplayedPackets] = useState([]);
   const [totalPackets, setTotalPackets] = useState(0);
+  const [allAnomalousPackets, setAllAnomalousPackets] = useState([]);
 
-  //
-  // UTILITY FUNCTIONS AND HANDLERS
-  // 
-
-  const truncateString = (str, maxLength) => {
-    if (str == null) {
-      return '';
-    }
-    if (typeof str !== 'string') {
-      try {
-        str = JSON.stringify(str);
-      } catch (e) {
-        return ''; // return empty string if data cannot be stringified
-      }
-    }
-    if (!str || str.length <= maxLength) return str;
-    return str.slice(0, maxLength) + '...';
-  };
-
-  const TruncatedData = ({ data, maxLength = 12 }) => {
-    const [isExpanded, setIsExpanded] = useState(false);
-
-    let displayData;
-    if (data == null) {
-      displayData = '';
-    } else if (typeof data !== 'string') {
-      try {
-        displayData = JSON.stringify(data);
-      } catch (e) {
-        displayData = ''; // fallback if data cannot be stringified
-      }
-    } else {
-      displayData = data;
-    }
-
-    if (displayData.length <= maxLength) {
-      return <span className="data-value">{displayData}</span>;
-    }
-
-    return (
-      <div>
-        <span className="data-value">
-          {isExpanded ? displayData : truncateString(displayData, maxLength)}
-        </span>
-        <button 
-          className="toggle-button" 
-          onClick={() => setIsExpanded(!isExpanded)}
-        >
-          {isExpanded ? 'Show Less' : 'Show More'}
-        </button>
-      </div>
-    );
-  };
-
+  // Utility functions
   const getStatusClass = (status) => {
     if (status === 'healthy') return 'status-healthy';
     if (status === 'Unknown') return 'loading';
@@ -155,46 +97,10 @@ const Dashboard = () => {
     }
   };
 
-  //
-  // USE EFFECTS
-  // 
-
-  useEffect(() => {
-    const newSocket = io("http://localhost:5000", {
-      transports: ["websocket"],
-    });
-  
-    newSocket.on("connect_error", (err) => {
-      console.error("WebSocket connection error:", err);
-    });
-    
-    newSocket.on("data_flow_health_update", setDataFlowHealth);
-    newSocket.on("raw_sample_update", setRawSample);
-    newSocket.on("processed_sample_update", setProcessedSample);
-    newSocket.on("anomaly_numbers_update", setAnomalyNumbers);
-    newSocket.on("training_status_update", setTrainingStatus);
-    newSocket.on("anomalous_packets_update", (data) => {
-      console.log("Received anomalous packets update:", data);
-      setTotalPackets(data.total);
-      setDisplayedPackets(data.packets);
-    });
-  
-    return () => {
-      newSocket.disconnect();
-    };
-  }, []);
-
-  useEffect(() => {
-    fetchAnomalousPackets(currentPage);
-  }, [currentPage]);
-
-
   const fetchAnomalousPackets = async (page) => {
-    console.log(`Fetching anomalous packets for page ${page}`);
     try {
       const response = await fetch(`http://localhost:5000/anomalous_packets?page=${page}`);
       const data = await response.json();
-      console.log("Fetched anomalous packets:", data);
       setDisplayedPackets(data.packets);
       setTotalPackets(data.total);
     } catch (error) {
@@ -214,12 +120,48 @@ const Dashboard = () => {
     }
   };
 
+  const handleRefreshAnomalousPackets = () => {
+    setDisplayedPackets(allAnomalousPackets.slice((currentPage - 1) * 5, currentPage * 5));
+  };
 
-  //
-  // FUNCTIONS TO ENCAPSULATE ALL OF THE CARDS ON THE DASHBOARD
-  // 
+  // useEffect hooks
+  useEffect(() => {
+    const newSocket = io("http://localhost:5000", {
+      transports: ["websocket"],
+    });
+  
+    newSocket.on("connect_error", (err) => {
+      console.error("WebSocket connection error:", err);
+    });
+    
+    newSocket.on("data_flow_health_update", setDataFlowHealth);
+    newSocket.on("raw_sample_update", setRawSample);
+    newSocket.on("processed_sample_update", setProcessedSample);
+    newSocket.on("anomaly_numbers_update", setAnomalyNumbers);
+    newSocket.on("training_status_update", setTrainingStatus);
+    newSocket.on("anomalous_packets_update", (data) => {
+      setAllAnomalousPackets(data.packets);
+      setTotalPackets(data.total);
+    });
+  
+    return () => {
+      newSocket.disconnect();
+    };
+  }, []);
 
+  useEffect(() => {
+    fetchAnomalousPackets(currentPage);
+  }, [currentPage]);
 
+  const getValue = (row, key) => {
+    if (key.includes('.')) {
+      const keys = key.split('.');
+      return keys.reduce((acc, part) => acc && acc[part], row);
+    }
+    return row[key];
+  };
+
+  // Card rendering functions
   const renderDataFlowHealthCard = () => (
     <div key="dataFlowHealth" className="dashboard-item">
       <ResizableCard title="Data Flow Health">
@@ -258,17 +200,22 @@ const Dashboard = () => {
     <div key="rawSample" className="dashboard-item">
       <ResizableCard title="Raw Data Sample">
         {rawSample ? (
-          <div>
-            <p><span className="data-label">Packet ID:</span> <TruncatedData data={rawSample.id} /></p>
-            <p><span className="data-label">Time Stamp:</span> <TruncatedData data={rawSample.time} /></p>
-            <p><span className="data-label">Data:</span> <TruncatedData data={rawSample.data} /></p>
-            <p><span className="data-label">Human Readable:</span></p>
-            <ul>
-              {rawSample.human_readable && Object.entries(rawSample.human_readable).map(([key, value]) => (
-                <li key={key}><span className="data-label">{key}:</span> <TruncatedData data={value} /></li>
-              ))}
-            </ul>
-          </div>
+          <DataTable
+            data={[rawSample]}
+            columns={[
+              { key: 'id', label: 'Packet ID' },
+              { key: 'time', label: 'Time Stamp' },
+              { key: 'data', label: 'Data' },
+              ...(rawSample.human_readable ? Object.keys(rawSample.human_readable).map(key => ({
+                key: `human_readable.${key}`,
+                label: key,
+                render: (row) => {
+                  const humanReadableData = getValue(row, `human_readable.${key}`);
+                  return <TruncatedData data={humanReadableData} />;
+                }
+              })) : [])
+            ]}
+          />
         ) : (
           <p className="loading">Loading raw data sample...</p>
         )}
@@ -280,34 +227,22 @@ const Dashboard = () => {
     <div key="processedSample" className="dashboard-item">
       <ResizableCard title="Processed Data Sample">
         {processedSample ? (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Packet ID</th>
-                <th>Timestamp</th>
-                <th>Features</th>
-                <th>src_ip</th>
-                <th>dst_ip</th>
-                <th>protocol</th>
-                <th>flags</th>
-                <th>src_port</th>
-                <th>dst_port</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><TruncatedData data={processedSample.id} /></td>
-                <td><TruncatedData data={processedSample.timestamp} /></td>
-                <td><TruncatedData data={processedSample.features.join(', ')} /></td>
-                <td><TruncatedData data={processedSample.human_readable.src_ip} /></td>
-                <td><TruncatedData data={processedSample.human_readable.dst_ip} /></td>
-                <td><TruncatedData data={processedSample.human_readable.protocol} /></td>
-                <td><TruncatedData data={processedSample.human_readable.flags} /></td>
-                <td><TruncatedData data={processedSample.human_readable.src_port} /></td>
-                <td><TruncatedData data={processedSample.human_readable.dst_port} /></td>
-              </tr>
-            </tbody>
-          </table>
+          <DataTable
+            data={[processedSample]}
+            columns={[
+              { key: 'id', label: 'Packet ID' },
+              { key: 'timestamp', label: 'Timestamp' },
+              { key: 'features', label: 'Features' },
+              ...(processedSample.human_readable ? Object.keys(processedSample.human_readable).map(key => ({
+                key: `human_readable.${key}`,
+                label: key,
+                render: (row) => {
+                  const humanReadableData = getValue(row, `human_readable.${key}`);
+                  return <TruncatedData data={humanReadableData} />;
+                }
+              })) : [])
+            ]}
+          />
         ) : (
           <p className="loading">Loading processed data sample...</p>
         )}
@@ -351,47 +286,40 @@ const Dashboard = () => {
     </div>
   );
 
-  const renderAnomalousPacketsCard = () => {
-    console.log("Rendering Anomalous Packets Card");
-    console.log("displayedPackets:", displayedPackets);
-  
-    return (
-      <div key="anomalousPackets" className="dashboard-item">
-        <ResizableCard title="Anomalous Packets">
-          {displayedPackets.length > 0 ? (
-            <div>
-              {displayedPackets.map((packet, index) => {
-                console.log(`Rendering packet ${index}:`, packet);
-                return (
-                  <div key={index}>
-                    <p><span className="data-label">Packet ID:</span> <TruncatedData data={packet.id} /></p>
-                    {packet.timestamp && <p><span className="data-label">Time Stamp:</span> <TruncatedData data={packet.timestamp} /></p>}
-                    {packet.data && <p><span className="data-label">Data:</span> <TruncatedData data={packet.data} /></p>}
-                    <p><span className="data-label">Human Readable:</span></p>
-                    <ul>
-                      {packet.human_readable && Object.entries(packet.human_readable).map(([key, value]) => {
-                        console.log(`Rendering human readable entry: ${key}:`, value);
-                        return (
-                          <li key={key}><span className="data-label">{key}:</span> <TruncatedData data={value} /></li>
-                        );
-                      })}
-                    </ul>
-                  </div>
-                );
-              })}
-              <div className="pagination-controls">
-                <button className="themed_button" onClick={handlePreviousPage} disabled={currentPage === 1}>Previous</button>
-                <span>Page {currentPage}</span>
-                <button className="themed_button" onClick={handleNextPage} disabled={currentPage * 5 >= totalPackets}>Next</button>
-              </div>
+  const renderAnomalousPacketsCard = () => (
+    <div key="anomalousPackets" className="dashboard-item">
+      <ResizableCard title="Anomalous Packets">
+        {displayedPackets.length > 0 ? (
+          <div>
+            <DataTable
+              data={displayedPackets}
+              columns={[
+                { key: 'id', label: 'Packet ID' },
+                { key: 'reconstruction_error', label: 'Reconstruction Error' },
+                { key: 'is_anomaly', label: 'Is Anomaly' },
+                ...(displayedPackets[0].human_readable ? Object.keys(displayedPackets[0].human_readable).map(key => ({
+                  key: `human_readable.${key}`,
+                  label: key.replace('_', ' ').toUpperCase(),
+                  render: (row) => {
+                    const humanReadableData = getValue(row, `human_readable.${key}`);
+                    return <TruncatedData data={humanReadableData} />;
+                  }
+                })) : [])
+              ]}
+            />
+            <div className="pagination-controls">
+              <button className="themed_button" onClick={handlePreviousPage} disabled={currentPage === 1}>Previous</button>
+              <span>Page {currentPage}</span>
+              <button className="themed_button" onClick={handleNextPage} disabled={currentPage * 5 >= totalPackets}>Next</button>
             </div>
-          ) : (
-            <p className="loading">No anomalous packets detected yet...</p>
-          )}
-        </ResizableCard>
-      </div>
-    );
-  };
+            <button className="refresh-button" onClick={handleRefreshAnomalousPackets}>Refresh Data</button>
+          </div>
+        ) : (
+          <p className="loading">No anomalous packets detected yet...</p>
+        )}
+      </ResizableCard>
+    </div>
+  );
 
   const TrainingStatusDisplay = ({ status, progress, message }) => (
     <div className="training-status">
@@ -407,38 +335,21 @@ const Dashboard = () => {
     </div>
   );
 
-  //
-  // FUNCTION TO RENDER ALL OF THE CARDS ON THE DASHBOARD
-  // 
-
-  const renderCard = (cardType) => {
-    switch (cardType) {
-      case 'dataFlowHealth':
-        return renderDataFlowHealthCard();
-      case 'anomalyNumbers':
-        return renderAnomalyNumbersCard();
-      case 'rawSample':
-        return renderRawSampleCard();
-      case 'processedSample':
-        return renderProcessedSampleCard();
-      case 'trainModel':
-        return renderTrainModelCard();
-      case 'anomalousPackets':
-        return renderAnomalousPacketsCard();
-      default:
-        return null;
-    }
-  };
-
+  // Main render function
   return (
     <div className="container">
       <header className="header">
         <h1>MLSEC</h1>
       </header>
       <div className="dashboard">
-        {['dataFlowHealth', 'anomalyNumbers', 'rawSample', 'processedSample', 'trainModel', 'anomalousPackets'].map((cardType) => (
-          renderCard(cardType)
-        ))}
+        {[
+          renderDataFlowHealthCard(),
+          renderAnomalyNumbersCard(),
+          renderRawSampleCard(),
+          renderProcessedSampleCard(),
+          renderTrainModelCard(),
+          renderAnomalousPacketsCard()
+        ]}
       </div>
     </div>
   );
