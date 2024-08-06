@@ -11,9 +11,8 @@ RUN apt-get update && apt-get install -y curl
 
 # Copy the custom handler and any other necessary files
 COPY custom_handler.py /home/model-server/
-COPY memory_autoencoder.py /home/model-server/
-COPY memory_module.py /home/model-server/
-COPY memory_autoencoder.mar /home/model-server/model-store/
+COPY transformer_autoencoder.py /home/model-server/
+COPY transformer_autoencoder.mar /home/model-server/model-store/
 COPY config.properties /home/model-server/config.properties
 
 # Install any needed packages specified in requirements.txt
