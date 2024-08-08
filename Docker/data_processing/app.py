@@ -32,6 +32,8 @@ MODEL_NAME = os.getenv('MODEL_NAME', 'transformer_autoencoder')
 SCALER_PATH = os.getenv('SCALER_PATH', '/app/scaler_data/robust_scaler.pkl')
 TRAINING_DATA_PATH = os.getenv('TRAINING_DATA_PATH', '/app/training_data')
 ANOMALY_THRESHOLD = os.getenv('ANOMALY_THRESHOLD', 1)
+SEQUENCE_LENGTH = os.getenv('SEQUENCE_LENGTH', 16)
+FEATURE_COUNT = os.getenv('FEATURE_COUNT', 12)
 
 protocol_map = {1: "ICMP", 6: "TCP", 17: "UDP", 2: "IGMP"} 
 is_training_period = False
@@ -139,7 +141,31 @@ class CustomEncoder(json.JSONEncoder):
             return str(obj)
         return super(CustomEncoder, self).default(obj)
 
+class PacketSequenceBuffer:
+    def __init__(self, sequence_length=int(SEQUENCE_LENGTH)):
+        self.feature_buffer = []
+        self.human_readable_buffer = []
+        self.sequence_length = sequence_length
 
+    def add_packet(self, packet_features, human_readable):
+        logging.debug(f"Adding packet to buffer. Current buffer length: {len(self.feature_buffer)}")
+        self.feature_buffer.append(packet_features)
+        self.human_readable_buffer.append(human_readable)
+        if len(self.feature_buffer) == self.sequence_length:
+            feature_sequence = self.feature_buffer.copy()
+            human_readable_sequence = self.human_readable_buffer.copy()
+            self.feature_buffer.clear()
+            self.human_readable_buffer.clear()
+            logging.debug("Buffer reached sequence length. Returning sequence.")
+            return feature_sequence, human_readable_sequence
+        logging.debug(f"Buffer not yet full. Current buffer length: {len(self.feature_buffer)} / {self.sequence_length}. Returning None.")
+        return None, None
+
+def is_full_sequence(sequence):
+    if len(sequence) == int(SEQUENCE_LENGTH):
+        return True
+    logging.warning(f'sequence of length {len(sequence)} did not meet desired length {SEQUENCE_LENGTH}')
+    return False
 
 def get_available_interfaces():
     logging.info('Getting available interfaces')
@@ -217,75 +243,74 @@ def check_ports(interface, ports, retry_interval=5):
         logging.info(f"No traffic detected on ports {ports} for interface {interface}. Retrying in {retry_interval} seconds...")
         time.sleep(retry_interval)
 
-class PacketSequenceBuffer:
-    def __init__(self, sequence_length=16):
-        self.feature_buffer = []
-        self.human_readable_buffer = []
-        self.sequence_length = sequence_length
-
-    def add_packet(self, packet_features, human_readable):
-        self.feature_buffer.append(packet_features)
-        self.human_readable_buffer.append(human_readable)
-        if len(self.feature_buffer) == self.sequence_length:
-            feature_sequence = self.feature_buffer.copy()
-            human_readable_sequence = self.human_readable_buffer.copy()
-            self.feature_buffer.clear()
-            self.human_readable_buffer.clear()
-            return feature_sequence, human_readable_sequence
-        return None, None
-
 def capture_live_traffic(interface):
     if not check_ports(interface, [80, 443]):
         logging.error(f"[TrafficCaptureThread] Ports are not being forwarded to interface {interface}")
         return
     try:
-        packet_buffer = []
+        packet_buffer = PacketSequenceBuffer()
         def packet_callback(packet):
             logging.debug(f"[TrafficCaptureThread] Captured packet type: {type(packet)}")
             logging.debug(f"[TrafficCaptureThread] Packet summary: {packet.summary()}")
-            packet_buffer.append(packet)
-            if len(packet_buffer) >= 16:
-                produce_raw_data(packet_buffer)
-                packet_buffer.clear()
-
+            features, human_readable = process_packet(packet)
+            feature_sequence, human_readable_sequence = packet_buffer.add_packet(features, human_readable)
+            if feature_sequence:
+                produce_raw_data([feature_sequence], [human_readable_sequence])
         sniff(iface=interface, prn=packet_callback, store=0)
     except Exception as e:
         logging.error(f"[TrafficCaptureThread] Error capturing live traffic: {e}")
 
-def produce_raw_data(packets):
+def produce_raw_data(feature_sequences, human_readable_sequences, is_training=False):
     producer = producer_manager.get_producer(RAW_TOPIC)
-    sequence_buffer = PacketSequenceBuffer()
-    
-    for packet in packets:
-        features, human_readable = process_packet(packet)
-        if features:
-            feature_sequence, human_readable_sequence = sequence_buffer.add_packet(features, human_readable)
-            if feature_sequence:
-                serialized_sequence = {
-                    "id": generate_unique_id(),
-                    "time": time.time(),
-                    "sequence": feature_sequence,
-                    "is_training": is_training_period,
-                    "human_readable": human_readable_sequence
-                }
-                producer.produce(
-                    RAW_TOPIC,
-                    key=serialized_sequence['id'],
-                    value=json.dumps(serialized_sequence, cls=CustomEncoder)
-                )
-                producer.poll(0)
-    
+    logging.info('Attempting to produce raw packets')
+    for feature_sequence, human_readable_sequence in zip(feature_sequences, human_readable_sequences):
+        if is_full_sequence(feature_sequence):
+            serialized_sequence = {
+                "id": generate_unique_id(),
+                "time": time.time(),
+                "sequence": feature_sequence,
+                "is_training": is_training,
+                "human_readable": human_readable_sequence
+            }
+            logging.debug(f"Serialized sequence: {serialized_sequence}")
+            producer.produce(
+                RAW_TOPIC,
+                key=serialized_sequence['id'],
+                value=json.dumps(serialized_sequence, cls=CustomEncoder)
+            )
+            producer.poll(0)
+            logging.info(f"Produced sequence with ID {serialized_sequence['id']}")
     producer.flush()
+    logging.info('Finished producing all sequences.')
 
 def generate_unique_id():
     return str(uuid.uuid4())
 
 def read_pcap(file_path, broker_address):
+    update_training_status("Training data upload", 0, "Initiated file upload")
     logging.info(f"Processing uploaded PCAP file: {file_path}")
     try:
+        update_training_status("Training data upload", 50, "Reading from file")
         packets = rdpcap(file_path)
+        update_training_status("Training data upload", 75, "Successfully read from file")
         logging.info(f"Successfully unpacked {len(packets)} packets from training file")
-        produce_raw_data([(packet, True) for packet in packets])  # Mark all packets as training data
+
+        sequence_buffer = PacketSequenceBuffer()
+        feature_sequences = []
+        human_readable_sequences = []
+
+        for packet in packets:
+            features, human_readable = process_packet(packet)
+            if features:
+                feature_sequence, human_readable_sequence = sequence_buffer.add_packet(features, human_readable)
+                if feature_sequence:
+                    feature_sequences.append(feature_sequence)
+                    human_readable_sequences.append(human_readable_sequence)
+
+        if feature_sequences:
+            produce_raw_data(feature_sequences, human_readable_sequences, is_training=True)
+
+        update_training_status("Training data upload", 100, "Successfully uploaded training data")
     except Exception as e:
         logging.error(f"Error processing uploaded PCAP: {e}")
 
@@ -319,7 +344,7 @@ def serialize_packet(packet, is_training=False):
         logging.error(f"[{thread_name}] Error serializing packet: {e}")
         return None
 
-def fit_scaler(sample_size=1000):
+def fit_scaler(sample_size=100):
     consumer = consumer_manager.get_consumer(RAW_TOPIC, 'scaler_fitting')
     features_list = []
     while len(features_list) < sample_size:
@@ -327,20 +352,44 @@ def fit_scaler(sample_size=1000):
         if msg is None:
             continue
         if msg.error():
+            logging.error(f"Consumer error while fitting scaler: {msg.error()}")
             continue
         
-        value = json.loads(msg.value())
-        for packet_features in value['sequence']:
-            features_list.append(packet_features)
-            if len(features_list) >= sample_size:
-                break
+        try:
+            value = json.loads(msg.value())
+            logging.debug(f"Received message for scaler fitting: {value}")
+            for packet_features in value['sequence']:
+                if len(packet_features) == FEATURE_COUNT and all(isinstance(f, (int, float)) for f in packet_features):
+                    features_list.append(packet_features)
+                    if len(features_list) >= sample_size:
+                        break
+                else:
+                    logging.warning(f"Invalid packet features: {packet_features}")
+        except json.JSONDecodeError as e:
+            logging.error(f"Error decoding message: {e}")
+        except Exception as e:
+            logging.error(f"Unexpected error processing message during scalar fit: {e}")
     
-    if features_list and all(len(features) == 11 for features in features_list):
-        df = pd.DataFrame(features_list, columns=['src_ip', 'dst_ip', 'length', 'flags', 'ttl', 'protocol', 'src_port', 'dst_port', 'tcp_flags', 'window', 'packet_size'])
+    if features_list and all(len(features) == FEATURE_COUNT for features in features_list):
+        column_names = ['src_ip', 'dst_ip', 'length', 'flags', 'ttl', 'protocol', 'src_port', 'dst_port', 'tcp_flags', 'window', 'packet_size', 'padding']  # Updated to include 12 features
+        df = pd.DataFrame(features_list, columns=column_names)
+        
+        # Convert any remaining non-numeric values to NaN
+        df = df.apply(pd.to_numeric, errors='coerce')
+        
+        # Drop any rows with NaN values
+        df = df.dropna()
+        
+        if df.empty:
+            logging.error("DataFrame is empty after dropping NaN values")
+            raise ValueError("Insufficient or incorrect feature data to create DataFrame")
+
         scaler = RobustScaler()
         scaler.fit(df)
-        return scaler, df
+        logging.info("Successfully fitted scaler")
+        return scaler, column_names
     else:
+        logging.error("Insufficient or incorrect feature data to create DataFrame")
         raise ValueError("Insufficient or incorrect feature data to create DataFrame")
 
 def process_raw_data():
@@ -349,7 +398,7 @@ def process_raw_data():
     training_producer = producer_manager.get_producer(TRAINING_TOPIC)
     
     # Initialize the scaler
-    scaler, _ = fit_scaler()
+    scaler, column_names = fit_scaler()
 
     while True:
         msg = consumer.poll(1.0)
@@ -361,52 +410,94 @@ def process_raw_data():
 
         try:
             value = json.loads(msg.value().decode('utf-8'))
-            if 'id' in value and 'sequence' in value and 'is_training' in value:
-                sequence_id = value['id']
-                is_training = value['is_training']
-                sequence = value['sequence']
+            logging.debug(f"Received raw data message: {value}")
 
-                # Scale the features
-                scaled_sequence = []
-                for packet_features in sequence:
-                    scaled_features = scale_features(packet_features, scaler)
-                    if scaled_features is not None:
-                        scaled_sequence.append(scaled_features.tolist())
-                    else:
-                        logging.warning(f"Failed to scale features for packet in sequence {sequence_id}")
+            if not all(k in value for k in ('id', 'sequence', 'is_training', 'human_readable')):
+                logging.error(f"Missing keys in the message: {value}")
+                continue
 
-                processed_value = {
-                    "id": sequence_id,
-                    "timestamp": value.get('timestamp', float(msg.timestamp()[1])),
-                    "sequence": scaled_sequence,
-                    "is_training": is_training,
-                    "human_readable": value['human_readable']
-                }
+            sequence_id = value['id']
+            is_training = value['is_training']
+            sequence = value['sequence']
+            human_readable_list = value['human_readable']
 
-                processed_producer.produce(
-                    topic=PROCESSED_TOPIC,
+            # Validate that sequence and human_readable_list are lists and have the same length
+            if not isinstance(sequence, list):
+                logging.error(f"Invalid structure for 'sequence' in message: {value}")
+                continue
+            if not isinstance(human_readable_list, list):
+                human_readable_list = [human_readable_list] * len(sequence)  # Convert to list of dictionaries
+
+            if len(sequence) != len(human_readable_list):
+                logging.error(f"Mismatch between sequence length and human_readable length in message: {value}")
+                continue
+
+            # Scale the features
+            scaled_sequence = []
+            scaled_human_readable_list = []
+            for idx, packet_features in enumerate(sequence):
+                scaled_features = scale_features(packet_features, scaler, column_names)
+                if scaled_features is not None:
+                    scaled_sequence.append(scaled_features.tolist())
+                    scaled_human_readable_list.append(human_readable_list[idx])
+                else:
+                    logging.warning(f"Failed to scale features for packet in sequence {sequence_id}")
+
+            processed_value = {
+                "id": sequence_id,
+                "time": value.get('time', time.time()),
+                "sequence": scaled_sequence,
+                "is_training": is_training,
+                "human_readable": scaled_human_readable_list
+            }
+
+            logging.debug(f"Producing processed data: {processed_value}")
+            processed_producer.produce(
+                topic=PROCESSED_TOPIC,
+                key=sequence_id,
+                value=json.dumps(processed_value, cls=CustomEncoder),
+            )
+
+            if is_training:
+                training_producer.produce(
+                    topic=TRAINING_TOPIC,
                     key=sequence_id,
                     value=json.dumps(processed_value, cls=CustomEncoder),
                 )
 
-                if is_training:
-                    training_producer.produce(
-                        topic=TRAINING_TOPIC,
-                        key=sequence_id,
-                        value=json.dumps(processed_value, cls=CustomEncoder),
-                    )
-
-                consumer.commit(msg)
+            consumer.commit(msg)
         except json.JSONDecodeError as e:
             logging.error(f"Error decoding message: {e}")
+        except KeyError as ke:
+            logging.error(f"KeyError: {ke} in message: {value}")
+        except ValueError as ve:
+            logging.error(f"ValueError: {ve}")
+        except TypeError as te:
+            logging.error(f"TypeError: {te}")
         except Exception as e:
-            logging.error(f"Unexpected error processing message: {e}")
+            logging.error(f"Unexpected error processing data from raw topic: {e}")
 
-def scale_features(features, scaler):
+
+def scale_features(features, scaler, column_names):
     try:
-        scaled = scaler.transform([features])[0]
+        df = pd.DataFrame([features], columns=column_names)
+        
+        # Track initial DataFrame to compare for coercion
+        initial_df = df.copy()
+        
+        # Convert any non-numeric values to NaN
+        df = df.apply(pd.to_numeric, errors='coerce')
+        
+        # Log a warning if any values were coerced to NaN
+        if not initial_df.equals(df):
+            logging.warning("Some non-numeric values were coerced to NaN.")
+        
+        # If any NaN values remain, replace them with 0
+        df = df.fillna(0)
+        
+        scaled = scaler.transform(df)
         logging.debug(f"Scaled features: {scaled}")
-        return scaled
+        return scaled[0]
     except Exception as e:
         logging.error(f"Error scaling features: {e}")
         return None
@@ -422,22 +513,66 @@ def protocol_to_int(proto: int) -> int:
     return protocol_map.get(proto, 0)
 
 def process_packet(packet):
-    thread_name = get_thread_name()
-    logging.debug(f"[{thread_name}] Processing packet of type: {type(packet)}")
     try:
-        if isinstance(packet, dict):
-            packet_data = bytes.fromhex(packet['data'])  # Convert hex string back to bytes
-            packet = Ether(packet_data)  # Convert bytes to Ether packet
-        if isinstance(packet, Raw):
-            packet = Ether(bytes(packet))  # Convert Raw packet to Ether packet
-        if isinstance(packet, Ether):
-            logging.debug(f"[{thread_name}] Processing Ether packet: {packet.summary()}")
-            return extract_features(packet)
+        if isinstance(packet, tuple):
+            packet = packet[0]
+
+        features = []
+        human_readable = {}
+
+        # IP features
+        if IP in packet:
+            ip = packet[IP]
+            features.extend([
+                int.from_bytes(bytes(map(int, ip.src.split('.'))), byteorder='big'),
+                int.from_bytes(bytes(map(int, ip.dst.split('.'))), byteorder='big'),
+                int(ip.len),
+                int(ip.flags),
+                int(ip.ttl),
+                int(ip.proto)
+            ])
+            human_readable['src_ip'] = ip.src
+            human_readable['dst_ip'] = ip.dst
+            human_readable['protocol'] = protocol_map.get(ip.proto, "Unknown")
         else:
-            logging.warning(f"[{thread_name}] Unexpected input type: {type(packet)}")
-            return None, None
+            features.extend([0] * 6)
+
+        # TCP/UDP features
+        if TCP in packet:
+            tcp = packet[TCP]
+            features.extend([
+                int(tcp.sport),
+                int(tcp.dport),
+                int(tcp.flags),
+                int(tcp.window)
+            ])
+            human_readable['src_port'] = tcp.sport
+            human_readable['dst_port'] = tcp.dport
+            human_readable['flags'] = tcp.flags
+        elif UDP in packet:
+            udp = packet[UDP]
+            features.extend([
+                int(udp.sport),
+                int(udp.dport),
+                0,  # UDP doesn't have flags
+                0   # UDP doesn't have window
+            ])
+            human_readable['src_port'] = udp.sport
+            human_readable['dst_port'] = udp.dport
+            human_readable['flags'] = ""
+        else:
+            features.extend([0] * 4)
+
+        # Adjust the features list to match FEATURE_COUNT
+        if len(features) < FEATURE_COUNT:
+            features.extend([0] * (FEATURE_COUNT - len(features)))
+        elif len(features) > FEATURE_COUNT:
+            features = features[:FEATURE_COUNT]
+
+        logging.debug(f"Processed packet features: {features}")
+        return features, human_readable
     except Exception as e:
-        logging.error(f"[{thread_name}] Error processing packet: {e}")
+        logging.warning(f"Failed to process packet: {e}")
         return None, None
 
 def safe_convert(value):
@@ -592,7 +727,10 @@ def fetch_training_data():
             except json.JSONDecodeError as e:
                 logging.error(f"Error decoding message: {e}")
             except Exception as e:
-                logging.error(f"Unexpected error processing message: {e}")
+                logging.error(f"Unexpected error processing message fetching training data: {e}")
+
+            if is_full_sequence(data):
+                break
 
     finally:
         consumer.close()
@@ -708,6 +846,10 @@ def prediction_thread():
             try:
                 value = json.loads(msg.value().decode('utf-8'))
                 if 'id' in value and 'sequence' in value:
+                    if not is_full_sequence(value['sequence']):
+                        logging.warning(f"Received incomplete sequence: {value}")
+                        continue
+                    
                     prediction = query_model(value['sequence'])
                 
                     if "error" in prediction:
@@ -735,7 +877,7 @@ def prediction_thread():
             except json.JSONDecodeError as e:
                 logging.error(f"Error decoding message: {e}")
             except Exception as e:
-                logging.error(f"Unexpected error processing message: {e}")
+                logging.error(f"Unexpected error processing message in prediction thread: {e}")
 
     except KeyboardInterrupt:
         logging.info("Interrupted.")

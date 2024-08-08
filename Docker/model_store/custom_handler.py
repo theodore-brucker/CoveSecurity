@@ -37,34 +37,6 @@ class PacketAnomalyDetector(BaseHandler):
         self.initialized = True
         logger.info("PacketAnomalyDetector initialization completed")
 
-    def preprocess(self, data):
-        logger.debug("Starting preprocessing")
-
-        if isinstance(data, list) and isinstance(data[0], dict) and 'body' in data[0]:
-            # Training data format
-            data = data[0]['body']
-        
-        if not isinstance(data, list):
-            logger.error("Invalid input data format")
-            raise ValueError("Input data must be a list")
-
-        # Convert data to tensor
-        tensor_data = torch.tensor(data, dtype=torch.float32)
-        
-        # Reshape if necessary
-        if len(tensor_data.shape) == 2:  # Single sequence
-            tensor_data = tensor_data.unsqueeze(0)
-        
-        if tensor_data.shape[1:] != (self.sequence_length, self.feature_dim):
-            logger.error(f"Invalid input shape: {tensor_data.shape}")
-            raise ValueError(f"Each sequence must have shape ({self.sequence_length}, {self.feature_dim})")
-
-        dataset = TensorDataset(tensor_data)
-        dataloader = DataLoader(dataset, batch_size=32, shuffle=False)
-        
-        logger.info(f"Preprocessing completed. DataSet size: {len(dataset)}, DataLoader batches: {len(dataloader)}")
-        return dataloader
-
     def load_latest_weights(self):
         if not self.model_dir:
             logger.error("model_dir is not set")
@@ -102,6 +74,32 @@ class PacketAnomalyDetector(BaseHandler):
         logger.debug(f"Inference completed. Total sequences processed: {len(results)}")
         return results
 
+    def preprocess(self, data):
+        logger.debug("Starting preprocessing")
+
+        if isinstance(data, list) and isinstance(data[0], dict) and 'body' in data[0]:
+            # Training data format
+            data = json.loads(data[0]['body'])
+        
+        if not isinstance(data, dict) or 'sequence' not in data:
+            logger.error("Invalid input data format")
+            raise ValueError("Input data must be a dictionary with a 'sequence' key")
+
+        sequences = data['sequence']
+        
+        # Convert data to tensor
+        tensor_data = torch.tensor(sequences, dtype=torch.float32)
+        
+        if tensor_data.shape[1:] != (self.sequence_length, self.feature_dim):
+            logger.error(f"Invalid input shape: {tensor_data.shape}")
+            raise ValueError(f"Each sequence must have shape ({self.sequence_length}, {self.feature_dim})")
+
+        dataset = TensorDataset(tensor_data)
+        dataloader = DataLoader(dataset, batch_size=32, shuffle=False)
+        
+        logger.info(f"Preprocessing completed. DataSet size: {len(dataset)}, DataLoader batches: {len(dataloader)}")
+        return dataloader
+
     def postprocess(self, inference_outputs):
         logger.info("Starting postprocessing")
         anomaly_results = []
@@ -109,8 +107,8 @@ class PacketAnomalyDetector(BaseHandler):
         for i, (original, reconstructed, anomaly_score) in enumerate(inference_outputs):
             anomaly_results.append({
                 "sequence_id": i,
-                "anomaly_score": float(anomaly_score),
-                "reconstruction_error": float(((original - reconstructed) ** 2).mean())
+                "reconstruction_error": float(anomaly_score),
+                "is_anomaly": float(anomaly_score) >= float(os.getenv('ANOMALY_THRESHOLD', 1))
             })
 
         logger.info(f"Postprocessing completed. Processed {len(anomaly_results)} sequences")
@@ -126,7 +124,7 @@ class PacketAnomalyDetector(BaseHandler):
             if context.get_request_header(0, "X-Request-Type") == "train":
                 logger.info("Received training request")
                 response = self.train(data, context)
-                logger.info(f"Training request handled successfully")
+                logger.info("Training request handled successfully")
                 return response
             else:
                 logger.debug("Received inference request")
@@ -184,7 +182,8 @@ class PacketAnomalyDetector(BaseHandler):
                 break
 
         # Save the model
-        model_file_name = f'transformer_autoencoder_{int(time.time())}.pth'
+        timestamp = f"{time.time():.2f}".replace('.', '_')
+        model_file_name = f'transformer_autoencoder_{timestamp}.pth'
         model_save_path = os.path.join('/home/model-server/model-store', model_file_name)
         torch.save(self.model.state_dict(), model_save_path)
         logger.info(f"Model saved to {model_save_path}")

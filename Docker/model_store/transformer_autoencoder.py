@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 class TransformerAutoencoder(nn.Module):
-    def __init__(self, input_size=14, sequence_length=16, nhead=2, num_encoder_layers=3, num_decoder_layers=3, dim_feedforward=256, dropout=0.1):
+    def __init__(self, input_size=12, sequence_length=16, nhead=2, num_encoder_layers=3, num_decoder_layers=3, dim_feedforward=256, dropout=0.1):
         super(TransformerAutoencoder, self).__init__()
         self.input_size = input_size
         self.sequence_length = sequence_length
