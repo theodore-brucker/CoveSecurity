@@ -3,7 +3,6 @@ import { io } from "socket.io-client";
 import ResizableCard from './ResizableCard';
 import DataTable from './DataTable';
 import TruncatedData from './TruncatedData';
-import { truncateString } from '../utils/stringUtils';
 
 const Dashboard = () => {
   // State variables
@@ -26,9 +25,9 @@ const Dashboard = () => {
     prediction: { status: 'Unknown', last_update: null }
   });
   const [currentPage, setCurrentPage] = useState(1);
-  const [displayedPackets, setDisplayedPackets] = useState([]);
-  const [totalPackets, setTotalPackets] = useState(0);
-  const [allAnomalousPackets, setAllAnomalousPackets] = useState([]);
+  const [displayedSequences, setDisplayedSequences] = useState([]);
+  const [totalSequences, setTotalSequences] = useState(0);
+  const [allAnomalousSequences, setAllAnomalousSequences] = useState([]);
 
   // Utility functions
   const getStatusClass = (status) => {
@@ -97,31 +96,31 @@ const Dashboard = () => {
     }
   };
 
-  const fetchAnomalousPackets = async (page) => {
+  const fetchAnomalousSequences = async (page) => {
     try {
-      const response = await fetch(`http://localhost:5000/anomalous_packets?page=${page}`);
+      const response = await fetch(`http://localhost:5000/anomalous_sequences?page=${page}`);
       const data = await response.json();
-      setDisplayedPackets(data.packets);
-      setTotalPackets(data.total);
+      setDisplayedSequences(data.sequences);
+      setTotalSequences(data.total);
     } catch (error) {
-      console.error('Error fetching anomalous packets:', error);
+      console.error('Error fetching anomalous sequences:', error);
     }
   };
-  
+
   const handlePreviousPage = () => {
     if (currentPage > 1) {
       setCurrentPage(prevPage => prevPage - 1);
     }
   };
-  
+
   const handleNextPage = () => {
-    if (currentPage * 5 < totalPackets) {
+    if (currentPage * 5 < totalSequences) {
       setCurrentPage(prevPage => prevPage + 1);
     }
   };
 
-  const handleRefreshAnomalousPackets = () => {
-    setDisplayedPackets(allAnomalousPackets.slice((currentPage - 1) * 5, currentPage * 5));
+  const handleRefreshAnomalousSequences = () => {
+    setDisplayedSequences(allAnomalousSequences.slice((currentPage - 1) * 5, currentPage * 5));
   };
 
   // useEffect hooks
@@ -129,28 +128,28 @@ const Dashboard = () => {
     const newSocket = io("http://localhost:5000", {
       transports: ["websocket"],
     });
-  
+
     newSocket.on("connect_error", (err) => {
       console.error("WebSocket connection error:", err);
     });
-    
+
     newSocket.on("data_flow_health_update", setDataFlowHealth);
     newSocket.on("raw_sample_update", setRawSample);
     newSocket.on("processed_sample_update", setProcessedSample);
     newSocket.on("anomaly_numbers_update", setAnomalyNumbers);
     newSocket.on("training_status_update", setTrainingStatus);
-    newSocket.on("anomalous_packets_update", (data) => {
-      setAllAnomalousPackets(data.packets);
-      setTotalPackets(data.total);
+    newSocket.on("anomalous_sequences_update", (data) => {
+      setAllAnomalousSequences(data.sequences);
+      setTotalSequences(data.total);
     });
-  
+
     return () => {
       newSocket.disconnect();
     };
   }, []);
 
   useEffect(() => {
-    fetchAnomalousPackets(currentPage);
+    fetchAnomalousSequences(currentPage);
   }, [currentPage]);
 
   const getValue = (row, key) => {
@@ -203,9 +202,9 @@ const Dashboard = () => {
           <DataTable
             data={[rawSample]}
             columns={[
-              { key: 'id', label: 'Packet ID' },
-              { key: 'time', label: 'Time Stamp' },
-              { key: 'data', label: 'Data' },
+              { key: 'id', label: 'Sequence ID' },
+              { key: 'timestamp', label: 'Time Stamp' },
+              { key: 'sequence', label: 'Sequence' },
               ...(rawSample.human_readable ? Object.keys(rawSample.human_readable).map(key => ({
                 key: `human_readable.${key}`,
                 label: key,
@@ -230,9 +229,9 @@ const Dashboard = () => {
           <DataTable
             data={[processedSample]}
             columns={[
-              { key: 'id', label: 'Packet ID' },
+              { key: 'id', label: 'Sequence ID' },
               { key: 'timestamp', label: 'Timestamp' },
-              { key: 'features', label: 'Features' },
+              { key: 'sequence', label: 'Sequence' },
               ...(processedSample.human_readable ? Object.keys(processedSample.human_readable).map(key => ({
                 key: `human_readable.${key}`,
                 label: key,
@@ -286,18 +285,18 @@ const Dashboard = () => {
     </div>
   );
 
-  const renderAnomalousPacketsCard = () => (
-    <div key="anomalousPackets" className="dashboard-item">
-      <ResizableCard title="Anomalous Packets">
-        {displayedPackets.length > 0 ? (
+  const renderAnomalousSequencesCard = () => (
+    <div key="anomalousSequences" className="dashboard-item">
+      <ResizableCard title="Anomalous Sequences">
+        {displayedSequences.length > 0 ? (
           <div>
             <DataTable
-              data={displayedPackets}
+              data={displayedSequences}
               columns={[
-                { key: 'id', label: 'Packet ID' },
+                { key: 'id', label: 'Sequence ID' },
                 { key: 'reconstruction_error', label: 'Reconstruction Error' },
                 { key: 'is_anomaly', label: 'Is Anomaly' },
-                ...(displayedPackets[0].human_readable ? Object.keys(displayedPackets[0].human_readable).map(key => ({
+                ...(displayedSequences[0].human_readable ? Object.keys(displayedSequences[0].human_readable).map(key => ({
                   key: `human_readable.${key}`,
                   label: key.replace('_', ' ').toUpperCase(),
                   render: (row) => {
@@ -310,12 +309,12 @@ const Dashboard = () => {
             <div className="pagination-controls">
               <button className="themed_button" onClick={handlePreviousPage} disabled={currentPage === 1}>Previous</button>
               <span>Page {currentPage}</span>
-              <button className="themed_button" onClick={handleNextPage} disabled={currentPage * 5 >= totalPackets}>Next</button>
+              <button className="themed_button" onClick={handleNextPage} disabled={currentPage * 5 >= totalSequences}>Next</button>
             </div>
-            <button className="refresh-button" onClick={handleRefreshAnomalousPackets}>Refresh Data</button>
+            <button className="refresh-button" onClick={handleRefreshAnomalousSequences}>Refresh Data</button>
           </div>
         ) : (
-          <p className="loading">No anomalous packets detected yet...</p>
+          <p className="loading">No anomalous sequences detected yet...</p>
         )}
       </ResizableCard>
     </div>
@@ -348,7 +347,7 @@ const Dashboard = () => {
           renderRawSampleCard(),
           renderProcessedSampleCard(),
           renderTrainModelCard(),
-          renderAnomalousPacketsCard()
+          renderAnomalousSequencesCard()
         ]}
       </div>
     </div>
