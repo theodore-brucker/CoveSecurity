@@ -1,5 +1,4 @@
 from datetime import datetime, timezone
-import hashlib
 import json
 import os
 import uuid
@@ -8,8 +7,8 @@ import requests
 import logging
 from decimal import Decimal
 from scapy.fields import EDecimal
-from scapy.all import IP, TCP, UDP, ICMP, Ether, sniff, raw, rdpcap, Raw
-from confluent_kafka import Producer, Consumer, KafkaError, KafkaException
+from scapy.all import IP, TCP, UDP, ICMP, sniff, rdpcap
+from confluent_kafka import Producer, Consumer, KafkaException
 from confluent_kafka.admin import AdminClient
 import threading
 import time
@@ -267,7 +266,7 @@ def produce_raw_data(feature_sequences, human_readable_sequences, is_training=Fa
         if is_full_sequence(feature_sequence):
             serialized_sequence = {
                 "id": generate_unique_id(),
-                "time": time.time(),
+                "timestamp": time.time(),
                 "sequence": feature_sequence,
                 "is_training": is_training,
                 "human_readable": human_readable_sequence
@@ -279,9 +278,9 @@ def produce_raw_data(feature_sequences, human_readable_sequences, is_training=Fa
                 value=json.dumps(serialized_sequence, cls=CustomEncoder)
             )
             producer.poll(0)
-            logging.info(f"Produced sequence with ID {serialized_sequence['id']}")
+            logging.debug(f"Produced sequence with ID {serialized_sequence['id']}")
     producer.flush()
-    logging.info('Finished producing all sequences.')
+    logging.debug('Finished producing all sequences.')
 
 def generate_unique_id():
     return str(uuid.uuid4())
@@ -317,32 +316,6 @@ def read_pcap(file_path, broker_address):
 ##################################################
 # PACKET PROCESSING
 ##################################################
-
-def serialize_packet(packet, is_training=False):
-    thread_name = get_thread_name()
-    logging.debug(f"[{thread_name}] Serializing packet of type: {type(packet)}")
-
-    if isinstance(packet, tuple) and len(packet) == 2:
-        packet, is_training = packet
-
-    try:
-        features, human_readable = process_packet(packet)
-        if features is None or human_readable is None:
-            logging.warning(f"[{thread_name}] Unable to process packet, skipping serialization")
-            return None
-        
-        serialized = {
-            "id": generate_unique_id(),
-            "time": float(packet.time),
-            "data": raw(packet).hex(),
-            "is_training": is_training,
-            "human_readable": human_readable
-        }
-        logging.debug(f"[{thread_name}] Serialized packet: {serialized}")
-        return serialized
-    except Exception as e:
-        logging.error(f"[{thread_name}] Error serializing packet: {e}")
-        return None
 
 def fit_scaler(sample_size=100):
     consumer = consumer_manager.get_consumer(RAW_TOPIC, 'scaler_fitting')
@@ -445,7 +418,7 @@ def process_raw_data():
 
             processed_value = {
                 "id": sequence_id,
-                "time": value.get('time', time.time()),
+                "timestamp": value.get('timestamp', time.time()),
                 "sequence": scaled_sequence,
                 "is_training": is_training,
                 "human_readable": scaled_human_readable_list
@@ -477,7 +450,6 @@ def process_raw_data():
         except Exception as e:
             logging.error(f"Unexpected error processing data from raw topic: {e}")
 
-
 def scale_features(features, scaler, column_names):
     try:
         df = pd.DataFrame([features], columns=column_names)
@@ -501,16 +473,6 @@ def scale_features(features, scaler, column_names):
     except Exception as e:
         logging.error(f"Error scaling features: {e}")
         return None
-
-def ip_to_hash(ip: str) -> int:
-    return int(hashlib.sha256(ip.encode()).hexdigest()[:8], 16)
-
-def flags_to_int(flags: str) -> int:
-    return sum((0x01 << i) for i, f in enumerate('FSRPAUEC') if f in flags)
-
-def protocol_to_int(proto: int) -> int:
-    protocol_map = {1: 1, 6: 2, 17: 3, 2: 4}  # ICMP, TCP, UDP, IGMP
-    return protocol_map.get(proto, 0)
 
 def process_packet(packet):
     try:
@@ -575,81 +537,6 @@ def process_packet(packet):
         logging.warning(f"Failed to process packet: {e}")
         return None, None
 
-def safe_convert(value):
-    if isinstance(value, (int, float)):
-        return value
-    try:
-        return int(value)
-    except:
-        try:
-            return float(value)
-        except:
-            return 0
-
-def extract_features(packet):
-    features = []
-    human_readable = {}
-    
-    # IP features
-    try:
-        if IP in packet:
-            ip = packet[IP]
-            features.extend([
-                int.from_bytes(bytes(map(int, ip.src.split('.'))), byteorder='big'),
-                int.from_bytes(bytes(map(int, ip.dst.split('.'))), byteorder='big'),
-                safe_convert(ip.len),
-                safe_convert(ip.flags),
-                safe_convert(ip.ttl),
-                safe_convert(ip.proto)
-            ])
-            human_readable['src_ip'] = ip.src
-            human_readable['dst_ip'] = ip.dst
-            human_readable['protocol'] = protocol_map.get(ip.proto, "Unknown")
-        else:
-            features.extend([0] * 6)
-    except Exception as e:
-        logging.warning(f"Error parsing IP features: {e}")
-        features.extend([0] * 6)
-
-    # TCP/UDP features
-    try:
-        if TCP in packet:
-            tcp = packet[TCP]
-            features.extend([
-                safe_convert(tcp.sport),
-                safe_convert(tcp.dport),
-                safe_convert(tcp.flags),
-                safe_convert(tcp.window)
-            ])
-            human_readable['src_port'] = tcp.sport
-            human_readable['dst_port'] = tcp.dport
-            human_readable['flags'] = tcp.flags
-        elif UDP in packet:
-            udp = packet[UDP]
-            features.extend([
-                safe_convert(udp.sport),
-                safe_convert(udp.dport),
-                safe_convert(udp.len),
-                0  # Padding to match TCP feature count
-            ])
-            human_readable['src_port'] = udp.sport
-            human_readable['dst_port'] = udp.dport
-            human_readable['flags'] = ""
-        else:
-            features.extend([0] * 4)
-    except Exception as e:
-        logging.warning(f"Error parsing TCP/UDP features: {e}")
-        features.extend([0] * 4)
-
-    # General packet features
-    try:
-        features.append(safe_convert(len(packet)))
-    except Exception as e:
-        logging.warning(f"Error parsing general packet features: {e}")
-        features.append(0)
-
-    return features, human_readable
-
 ##################################################
 # MODEL - thread 3
 ##################################################
@@ -660,6 +547,14 @@ training_status = {
     "progress": 0,
     "message": ""
 }
+
+def update_training_status(status, progress, message):
+    global training_status
+    training_status = {
+        "status": status,
+        "progress": progress,
+        "message": message
+    }
 
 def train_model_process():
     update_training_status("starting", 0, "Initiating model training process")
@@ -748,7 +643,7 @@ def train_and_set_inference_mode(data):
         return False
 
     logging.info("Attempting to set model to inference mode")
-    max_retries = 300
+    max_retries = 30
     for attempt in range(max_retries):
         try:
             url = f"{TORCHSERVE_MANAGEMENT_URL}/models/{MODEL_NAME}"
@@ -769,7 +664,6 @@ def train_and_set_inference_mode(data):
     return False
 
 def train_model(data):
-    model_version = "1.0"
     max_retries = 5
 
     logging.info("Attempting to train model.")
@@ -812,14 +706,6 @@ def train_model(data):
             time.sleep(min(30, 5 * (attempt + 1)))  # Linear backoff with a maximum of 30 seconds
     
     return False
-
-def update_training_status(status, progress, message):
-    global training_status
-    training_status = {
-        "status": status,
-        "progress": progress,
-        "message": message
-    }
 
 def prediction_thread():
     logging.info("Starting prediction thread")
