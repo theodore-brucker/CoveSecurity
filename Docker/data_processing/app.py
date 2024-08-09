@@ -261,7 +261,7 @@ def capture_live_traffic(interface):
 
 def produce_raw_data(feature_sequences, human_readable_sequences, is_training=False):
     producer = producer_manager.get_producer(RAW_TOPIC)
-    logging.info('Attempting to produce raw packets')
+    logging.debug('Attempting to produce raw packets')
     for feature_sequence, human_readable_sequence in zip(feature_sequences, human_readable_sequences):
         if is_full_sequence(feature_sequence):
             serialized_sequence = {
@@ -755,6 +755,7 @@ def prediction_thread():
                             "is_anomaly": is_anomaly,
                             "human_readable": sequence_human_readable
                         }
+                        logging.info(f'producing prediction where is_anomaly = {is_anomaly}')
                         producer.produce(PREDICTIONS_TOPIC, key=sequence_id, value=json.dumps(output))                
                     producer.flush()
                     logging.debug(f"Produced prediction for sequence {sequence_id}")
