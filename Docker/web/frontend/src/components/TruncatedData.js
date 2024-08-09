@@ -10,17 +10,23 @@ const TruncatedData = ({ data, maxLength = 12 }) => {
 
   let displayData;
   try {
-    displayData = data == null ? '' : 
-      (typeof data !== 'string' ? JSON.stringify(data) : data);
+    // Safely processing the data
+    if (data == null) {
+      displayData = '\u00A0'; // Non-breaking space as placeholder
+    } else if (typeof data !== 'string') {
+      displayData = JSON.stringify(data);
+    } else {
+      displayData = data;
+    }
   } catch (error) {
     console.error("Error processing data in TruncatedData:", error);
-    displayData = 'Error processing data';
+    displayData = 'Error truncating data'; // Safe fallback in case of failure
   }
 
   console.log("TruncatedData displayData:", displayData);
 
   const handleMouseEnter = () => {
-    if (dataRef.current.offsetWidth < dataRef.current.scrollWidth) {
+    if (dataRef.current && dataRef.current.offsetWidth < dataRef.current.scrollWidth) {
       setShowTooltip(true);
     }
   };

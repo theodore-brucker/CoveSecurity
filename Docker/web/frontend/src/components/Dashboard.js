@@ -25,6 +25,10 @@ const Dashboard = () => {
   });
 
   const [allAnomalousSequences, setAllAnomalousSequences] = useState([]);
+  const [displayedSequences, setDisplayedSequences] = useState([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  
+  const [sequencesPerPage] = useState(5);
   const [selectedSequence, setSelectedSequence] = useState(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   
@@ -107,10 +111,11 @@ const Dashboard = () => {
       // Only update if we have non-empty sequences
       if (data && Array.isArray(data.sequences) && data.sequences.length > 0) {
         // Append the new sequences to the existing list
-        setAllAnomalousSequences(prevSequences => [
-          ...prevSequences,
-          ...data.sequences
-        ]);
+        setAllAnomalousSequences(prevSequences => {
+          const updatedSequences = [...prevSequences, ...data.sequences];
+          updateDisplayedSequences(updatedSequences, 1); // Show first page after refresh
+          return updatedSequences;
+        });
         anomalousSequencesRef.current = [
           ...anomalousSequencesRef.current,
           ...data.sequences
@@ -126,6 +131,14 @@ const Dashboard = () => {
     }
   }, []);
 
+  const updateDisplayedSequences = useCallback((sequences, page) => {
+    const startIndex = (page - 1) * sequencesPerPage;
+    const endIndex = startIndex + sequencesPerPage;
+    const newDisplayedSequences = sequences.slice(startIndex, endIndex);
+    console.log('Updating displayed sequences:', newDisplayedSequences);
+    setDisplayedSequences(newDisplayedSequences);
+  }, [sequencesPerPage]);
+
   const handleAnomalousSequencesUpdate = useCallback((data) => {
     console.log('Received anomalous sequences update:', data);
     console.log('Current sequences before update:', anomalousSequencesRef.current);
@@ -139,12 +152,30 @@ const Dashboard = () => {
 
       anomalousSequencesRef.current = updatedSequences;
       setAllAnomalousSequences(updatedSequences);
+      updateDisplayedSequences(updatedSequences, currentPage);
 
       console.log('Updated sequences after emission:', updatedSequences);
     } else {
       console.log('Received an empty or invalid update, no changes made.');
     }
-  }, []);
+  }, [currentPage, updateDisplayedSequences]);
+
+  const handlePreviousPage = useCallback(() => {
+    if (currentPage > 1) {
+      const newPage = currentPage - 1;
+      setCurrentPage(newPage);
+      updateDisplayedSequences(allAnomalousSequences, newPage);
+    }
+  }, [currentPage, allAnomalousSequences, updateDisplayedSequences]);
+
+  const handleNextPage = useCallback(() => {
+    const maxPage = Math.ceil(allAnomalousSequences.length / sequencesPerPage);
+    if (currentPage < maxPage) {
+      const newPage = currentPage + 1;
+      setCurrentPage(newPage);
+      updateDisplayedSequences(allAnomalousSequences, newPage);
+    }
+  }, [currentPage, allAnomalousSequences, sequencesPerPage, updateDisplayedSequences]);
 
   useEffect(() => {
     const newSocket = io("http://localhost:5000", {
@@ -160,9 +191,7 @@ const Dashboard = () => {
     newSocket.on("processed_sample_update", setProcessedSample);
     newSocket.on("anomaly_numbers_update", setAnomalyNumbers);
     newSocket.on("training_status_update", setTrainingStatus);
-    newSocket.on("anomalous_sequences_update", (data) => {
-      handleAnomalousSequencesUpdate(data);
-    });
+    newSocket.on("anomalous_sequences_update", handleAnomalousSequencesUpdate);
 
     handleRefreshAnomalousSequences();
 
@@ -293,7 +322,7 @@ const Dashboard = () => {
       <ResizableCard title="Anomalous Sequences">
         {isRefreshing ? (
           <p>Refreshing data...</p>
-        ) : allAnomalousSequences.length > 0 ? (
+        ) : displayedSequences.length > 0 ? (
           <div>
             <table className="data-table">
               <thead>
@@ -304,15 +333,20 @@ const Dashboard = () => {
                 </tr>
               </thead>
               <tbody>
-                {allAnomalousSequences.map((sequence) => (
+                {displayedSequences.map((sequence) => (
                   <tr key={sequence.id}>
                     <td>{sequence.id}</td>
                     <td>{sequence.reconstruction_error.toFixed(4)}</td>
-                    <td>{sequence.is_anomaly ? 'Yes' : 'No'}</td>
+                    <td>{sequence.is_anomaly ? 'No' : 'Yes'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            <div className="pagination-controls">
+              <button className="themed_button" onClick={handlePreviousPage} disabled={currentPage === 1}>Previous</button>
+              <span>Page {currentPage} of {Math.ceil(allAnomalousSequences.length / sequencesPerPage)}</span>
+              <button className="themed_button" onClick={handleNextPage} disabled={currentPage * sequencesPerPage >= allAnomalousSequences.length}>Next</button>
+            </div>
             <button className="refresh-button" onClick={handleRefreshAnomalousSequences}>Refresh Data</button>
           </div>
         ) : (

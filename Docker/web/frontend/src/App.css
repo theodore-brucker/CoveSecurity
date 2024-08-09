@@ -1,3 +1,4 @@
+/* Global Styles */
 @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&family=Open+Sans&display=swap');
 
 :root {
@@ -178,7 +179,6 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--text-primary);
 }
 
-
 .button-container {
   display: flex;
   flex-direction: column;
@@ -234,13 +234,6 @@ h1, h2, h3, h4, h5, h6 {
   height: calc(100% - 50px); /* Adjust based on your header height */
 }
 
-.button-container {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  width: 100%;
-}
-
 .data-table-container {
   overflow-x: auto;
   max-width: 100%;
@@ -248,16 +241,19 @@ h1, h2, h3, h4, h5, h6 {
 
 .data-table {
   width: 100%;
-  table-layout: fixed;
+  table-layout: fixed; /* Forces the table layout to be fixed */
   border-collapse: collapse;
 }
 
-.data-table th, .data-table td {
+.data-table th, 
+.data-table td {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   padding: 8px;
   border: 1px solid var(--text-secondary);
+  max-width: 150px; /* Adjust based on the specific needs */
+  height: 25px;
 }
 
 .data-table th {
@@ -267,6 +263,54 @@ h1, h2, h3, h4, h5, h6 {
 
 .data-table tbody tr:nth-child(even) {
   background-color: var(--card-bg);
+}
+
+.data-table tbody tr:nth-child(odd) {
+  background-color: var(--dark-bg);
+}
+
+/* Specific widths for each column */
+.data-table th:nth-child(1), .data-table td:nth-child(1) { 
+  width: 130px; /* Source IP */
+}
+
+.data-table th:nth-child(2), .data-table td:nth-child(2) { 
+  width: 130px; /* Destination IP */
+}
+
+.data-table th:nth-child(3), .data-table td:nth-child(3) { 
+  width: 50px; /* Protocol */
+}
+
+.data-table th:nth-child(4), .data-table td:nth-child(4) { 
+  width: 50px; /* Source Port */
+}
+
+.data-table th:nth-child(5), .data-table td:nth-child(5) { 
+  width: 50px; /* Destination Port */
+}
+
+.data-table th:nth-child(6), .data-table td:nth-child(6) { 
+  width: 50px; /* Flags */
+}
+
+.truncated-data {
+  position: relative;
+  display: inline-block;
+  width: 100%;
+}
+
+.truncated-data .tooltip {
+  position: absolute;
+  background-color: var(--card-bg);
+  border: 1px solid var(--text-secondary);
+  border-radius: 4px;
+  padding: 10px;
+  z-index: 1;
+  max-width: 300px;
+  white-space: normal;
+  font-size: 0.9em;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
 .pagination-controls {
@@ -295,24 +339,6 @@ h1, h2, h3, h4, h5, h6 {
 .training-status .progress {
   height: 100%;
   background-color: var(--bright-green);
-}
-
-.truncated-data {
-  position: relative;
-  display: inline-block;
-}
-
-.truncated-data .tooltip {
-  position: absolute;
-  background-color: var(--card-bg);
-  border: 1px solid var(--text-secondary);
-  border-radius: 4px;
-  padding: 10px;
-  z-index: 1;
-  max-width: 300px;
-  white-space: normal;
-  font-size: 0.9em;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
 .themed_file_input {
@@ -347,13 +373,9 @@ h1, h2, h3, h4, h5, h6 {
   background-color: #00FF7F;
 }
 
-
-.data-table tbody tr:nth-child(odd) {
-  background-color: var(--dark-bg);
-}
+/* Responsive adjustments */
 @media (max-width: 1200px) {
   .dashboard {
     grid-template-columns: 1fr;
   }
 }
-

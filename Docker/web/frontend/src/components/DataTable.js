@@ -40,7 +40,7 @@ const DataTable = ({ data, columns, isMultiSequence = false }) => {
                 <td key={column.key}>
                   {column.render ? 
                     column.render(packet, currentSequence.human_readable[index]) : 
-                    <TruncatedData data={packet[column.index]} />
+                    <TruncatedData data={packet && packet[column.index] ? packet[column.index] : '\u00A0'} />
                   }
                 </td>
               ))}
@@ -60,3 +60,4 @@ const DataTable = ({ data, columns, isMultiSequence = false }) => {
 };
 
 export default DataTable;
+
