@@ -1,7 +1,16 @@
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 const ResizableCard = ({ title, children }) => {
-  const [isVisible, setIsVisible] = React.useState(true);
+  const [isVisible, setIsVisible] = useState(true);
+  const [content, setContent] = useState(children);
+  const contentRef = useRef(children);
+
+  useEffect(() => {
+    if (JSON.stringify(children) !== JSON.stringify(contentRef.current)) {
+      contentRef.current = children;
+      setContent(children);
+    }
+  }, [children]);
 
   const toggleVisibility = () => {
     setIsVisible(!isVisible);
@@ -15,7 +24,7 @@ const ResizableCard = ({ title, children }) => {
       </div>
       {isVisible && (
         <div className="card-content">
-          {children}
+          {content}
         </div>
       )}
     </div>
@@ -23,4 +32,3 @@ const ResizableCard = ({ title, children }) => {
 };
 
 export default ResizableCard;
-

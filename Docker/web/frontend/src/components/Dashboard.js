@@ -1,8 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { io } from "socket.io-client";
 import ResizableCard from './ResizableCard';
 import DataTable from './DataTable';
-import TruncatedData from './TruncatedData';
 
 const Dashboard = () => {
   // State variables
@@ -24,24 +23,14 @@ const Dashboard = () => {
     training: { status: 'Unknown', last_update: null },
     prediction: { status: 'Unknown', last_update: null }
   });
-  const [currentPage, setCurrentPage] = useState(1);
-  const [displayedSequences, setDisplayedSequences] = useState([]);
-  const [totalSequences, setTotalSequences] = useState(0);
+
   const [allAnomalousSequences, setAllAnomalousSequences] = useState([]);
   const [selectedSequence, setSelectedSequence] = useState(null);
-  const [userRequestedUpdate, setUserRequestedUpdate] = useState(false);
-
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  
+  const anomalousSequencesRef = useRef([]);
 
   // Utility functions
-  const debounce = (func, wait) => {
-    let timeout;
-    return (...args) => {
-      clearTimeout(timeout);
-      timeout = setTimeout(() => func.apply(this, args), wait);
-    };
-  };
-  
-  
   const getStatusClass = (status) => {
     if (status === 'healthy') return 'status-healthy';
     if (status === 'Unknown') return 'loading';
@@ -108,52 +97,59 @@ const Dashboard = () => {
     }
   };
 
-  const fetchAnomalousSequences = async (page) => {
+  const handleRefreshAnomalousSequences = useCallback(async () => {
+    setIsRefreshing(true);
     try {
-      const response = await fetch(`http://localhost:5000/anomalous_sequences?page=${page}`);
+      const response = await fetch('http://localhost:5000/anomalous_sequences');
       const data = await response.json();
-  
-      if (data && Array.isArray(data.sequences)) {
-        setDisplayedSequences(data.sequences);
-        setTotalSequences(data.total || 0);
+      console.log('Fetched anomalous sequences:', data);
+
+      // Only update if we have non-empty sequences
+      if (data && Array.isArray(data.sequences) && data.sequences.length > 0) {
+        // Append the new sequences to the existing list
+        setAllAnomalousSequences(prevSequences => [
+          ...prevSequences,
+          ...data.sequences
+        ]);
+        anomalousSequencesRef.current = [
+          ...anomalousSequencesRef.current,
+          ...data.sequences
+        ];
+        console.log('Updated state after refresh:', anomalousSequencesRef.current);
       } else {
-        console.error('Unexpected data format:', data);
+        console.log('No new sequences fetched, keeping existing sequences.');
       }
     } catch (error) {
       console.error('Error fetching anomalous sequences:', error);
+    } finally {
+      setIsRefreshing(false);
     }
-  };
+  }, []);
 
-  const handlePreviousPage = () => {
-    if (currentPage > 1) {
-      setCurrentPage(prevPage => prevPage - 1);
+  const handleAnomalousSequencesUpdate = useCallback((data) => {
+    console.log('Received anomalous sequences update:', data);
+    console.log('Current sequences before update:', anomalousSequencesRef.current);
+
+    if (data && Array.isArray(data.sequences) && data.sequences.length > 0) {
+      // Append the new sequences to the existing list
+      const updatedSequences = [
+        ...anomalousSequencesRef.current,
+        ...data.sequences
+      ];
+
+      anomalousSequencesRef.current = updatedSequences;
+      setAllAnomalousSequences(updatedSequences);
+
+      console.log('Updated sequences after emission:', updatedSequences);
+    } else {
+      console.log('Received an empty or invalid update, no changes made.');
     }
-  };
+  }, []);
 
-  const handleNextPage = () => {
-    if (currentPage * 5 < totalSequences) {
-      setCurrentPage(prevPage => prevPage + 1);
-    }
-  };
-
-  const handleRefreshAnomalousSequences = () => {
-    setUserRequestedUpdate(true);
-  };
-
-  // useEffect hooks
   useEffect(() => {
     const newSocket = io("http://localhost:5000", {
       transports: ["websocket"],
     });
-
-    const handleAnomalousSequencesUpdate = debounce((data) => {
-      if (userRequestedUpdate && data && Array.isArray(data.sequences)) {
-        setAllAnomalousSequences(data.sequences);
-        setTotalSequences(data.total || 0);
-        setDisplayedSequences(data.sequences.slice((currentPage - 1) * 5, currentPage * 5));
-        setUserRequestedUpdate(false); // Reset the request flag after update
-      }
-    }, 300);
 
     newSocket.on("connect_error", (err) => {
       console.error("WebSocket connection error:", err);
@@ -164,25 +160,16 @@ const Dashboard = () => {
     newSocket.on("processed_sample_update", setProcessedSample);
     newSocket.on("anomaly_numbers_update", setAnomalyNumbers);
     newSocket.on("training_status_update", setTrainingStatus);
-    newSocket.on("anomalous_sequences_update", handleAnomalousSequencesUpdate);
+    newSocket.on("anomalous_sequences_update", (data) => {
+      handleAnomalousSequencesUpdate(data);
+    });
+
+    handleRefreshAnomalousSequences();
 
     return () => {
       newSocket.disconnect();
     };
-  }, [currentPage, userRequestedUpdate]);
-
-  useEffect(() => {
-    console.log(`Fetching anomalous sequences for page ${currentPage}`);
-    fetchAnomalousSequences(currentPage);
-  }, [currentPage]);
-
-  const getValue = (row, key) => {
-    if (key.includes('.')) {
-      const keys = key.split('.');
-      return keys.reduce((acc, part) => acc && acc[part], row);
-    }
-    return row[key];
-  };
+  }, [handleAnomalousSequencesUpdate, handleRefreshAnomalousSequences]);
 
   // Card rendering functions
   const renderDataFlowHealthCard = () => (
@@ -232,7 +219,6 @@ const Dashboard = () => {
               { key: 'src_port', label: 'Source Port', index: 6, render: (packet, human) => human.src_port },
               { key: 'dst_port', label: 'Destination Port', index: 7, render: (packet, human) => human.dst_port },
               { key: 'flags', label: 'Flags', render: (packet, human) => human.flags },
-              // Add more columns as needed
             ]}
             isMultiSequence={false}
           />
@@ -248,17 +234,16 @@ const Dashboard = () => {
       <ResizableCard title="Processed Data Sample">
         {processedSample ? (
           <DataTable
-          data={[processedSample]}
-          columns={[
-            { key: 'src_ip', label: 'Source IP', index: 0, render: (packet, human) => human.src_ip },
-            { key: 'dst_ip', label: 'Destination IP', index: 1, render: (packet, human) => human.dst_ip },
-            { key: 'protocol', label: 'Protocol', index: 5, render: (packet, human) => human.protocol },
-            { key: 'src_port', label: 'Source Port', index: 6, render: (packet, human) => human.src_port },
-            { key: 'dst_port', label: 'Destination Port', index: 7, render: (packet, human) => human.dst_port },
-            { key: 'flags', label: 'Flags', render: (packet, human) => human.flags },
-            // Add more columns as needed
-          ]}
-          isMultiSequence={false}
+            data={[processedSample]}
+            columns={[
+              { key: 'src_ip', label: 'Source IP', index: 0, render: (packet, human) => human.src_ip },
+              { key: 'dst_ip', label: 'Destination IP', index: 1, render: (packet, human) => human.dst_ip },
+              { key: 'protocol', label: 'Protocol', index: 5, render: (packet, human) => human.protocol },
+              { key: 'src_port', label: 'Source Port', index: 6, render: (packet, human) => human.src_port },
+              { key: 'dst_port', label: 'Destination Port', index: 7, render: (packet, human) => human.dst_port },
+              { key: 'flags', label: 'Flags', render: (packet, human) => human.flags },
+            ]}
+            isMultiSequence={false}
           />
         ) : (
           <p className="loading">Loading processed data sample...</p>
@@ -303,42 +288,12 @@ const Dashboard = () => {
     </div>
   );
 
-  const handleViewDetails = (sequence) => {
-    if (sequence && sequence.human_readable) {
-      setSelectedSequence(sequence.human_readable);
-    } else {
-      console.error('Invalid sequence data:', sequence);
-      setSelectedSequence(null);
-    }
-  };
-
-  const renderSequenceDetails = () => {
-    if (!selectedSequence) return null;
-  
-    return (
-      <div className="sequence-details-modal">
-        <h3>Sequence Details</h3>
-        <DataTable
-          data={selectedSequence}
-          columns={[
-            { key: 'src_ip', label: 'Source IP', render: (packet) => packet.src_ip },
-            { key: 'dst_ip', label: 'Destination IP', render: (packet) => packet.dst_ip },
-            { key: 'protocol', label: 'Protocol', render: (packet) => packet.protocol },
-            { key: 'src_port', label: 'Source Port', render: (packet) => packet.src_port },
-            { key: 'dst_port', label: 'Destination Port', render: (packet) => packet.dst_port },
-            { key: 'flags', label: 'Flags', render: (packet) => packet.flags },
-          ]}
-          isMultiSequence={true} // Set to true since it's an array of packets
-        />
-        <button onClick={() => setSelectedSequence(null)}>Close</button>
-      </div>
-    );
-  };
-
   const renderAnomalousSequencesCard = () => (
     <div key="anomalousSequences" className="dashboard-item">
       <ResizableCard title="Anomalous Sequences">
-        {displayedSequences.length > 0 ? (
+        {isRefreshing ? (
+          <p>Refreshing data...</p>
+        ) : allAnomalousSequences.length > 0 ? (
           <div>
             <table className="data-table">
               <thead>
@@ -346,31 +301,25 @@ const Dashboard = () => {
                   <th>Sequence ID</th>
                   <th>Reconstruction Error</th>
                   <th>Is Anomaly</th>
-                  <th>Details</th>
                 </tr>
               </thead>
               <tbody>
-                {displayedSequences.map((sequence) => (
+                {allAnomalousSequences.map((sequence) => (
                   <tr key={sequence.id}>
                     <td>{sequence.id}</td>
-                    <td>{sequence.reconstruction_error}</td>
+                    <td>{sequence.reconstruction_error.toFixed(4)}</td>
                     <td>{sequence.is_anomaly ? 'Yes' : 'No'}</td>
-                    <td>
-                      <button onClick={() => handleViewDetails(sequence)}>View Details</button>
-                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            <div className="pagination-controls">
-              <button className="themed_button" onClick={handlePreviousPage} disabled={currentPage === 1}>Previous</button>
-              <span>Page {currentPage}</span>
-              <button className="themed_button" onClick={handleNextPage} disabled={currentPage * 5 >= totalSequences}>Next</button>
-            </div>
             <button className="refresh-button" onClick={handleRefreshAnomalousSequences}>Refresh Data</button>
           </div>
         ) : (
-          <p className="loading">No anomalous sequences detected yet...</p>
+          <div>
+            <p className="loading">No anomalous sequences detected yet...</p>
+            <button className="refresh-button" onClick={handleRefreshAnomalousSequences}>Refresh Data</button>
+          </div>
         )}
       </ResizableCard>
     </div>
@@ -406,7 +355,6 @@ const Dashboard = () => {
           renderAnomalousSequencesCard()
         ]}
       </div>
-      {renderSequenceDetails()}
     </div>
   );
 };
