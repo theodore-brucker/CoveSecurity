@@ -1,37 +1,30 @@
-import React, { useState, useRef } from 'react';
+import React, { useState } from 'react';
 import TruncatedData from './TruncatedData';
 
-const DataTable = ({ data, columns }) => {
-  const [currentPacketIndex, setCurrentPacketIndex] = useState(0);
+const DataTable = ({ data, columns, isMultiSequence = false }) => {
+  const [currentSequenceIndex, setCurrentSequenceIndex] = useState(0);
 
   if (!data || data.length === 0) {
     return <p className="loading">No data available...</p>;
   }
 
-  const getValue = (row, key) => {
-    if (key.includes('.')) {
-      const keys = key.split('.');
-      return keys.reduce((acc, part) => acc && acc[part], row);
-    }
-    return row[key];
-  };
+  const currentSequence = data[currentSequenceIndex];
 
-  const currentPacket = data[currentPacketIndex];
-
-  const handlePreviousPacket = () => {
-    if (currentPacketIndex > 0) {
-      setCurrentPacketIndex(currentPacketIndex - 1);
+  const handlePreviousSequence = () => {
+    if (currentSequenceIndex > 0) {
+      setCurrentSequenceIndex(currentSequenceIndex - 1);
     }
   };
 
-  const handleNextPacket = () => {
-    if (currentPacketIndex < data.length - 1) {
-      setCurrentPacketIndex(currentPacketIndex + 1);
+  const handleNextSequence = () => {
+    if (currentSequenceIndex < data.length - 1) {
+      setCurrentSequenceIndex(currentSequenceIndex + 1);
     }
   };
 
   return (
     <div className="data-table-container">
+      <h3>Sequence ID: {currentSequence.id}</h3>
       <table className="data-table">
         <thead>
           <tr>
@@ -41,20 +34,27 @@ const DataTable = ({ data, columns }) => {
           </tr>
         </thead>
         <tbody>
-          <tr key={currentPacketIndex}>
-            {columns.map((column) => (
-              <td key={column.key} title={getValue(currentPacket, column.key)}>
-                {column.render ? column.render(currentPacket) : <TruncatedData data={getValue(currentPacket, column.key)} />}
-              </td>
-            ))}
-          </tr>
+          {currentSequence.sequence.map((packet, index) => (
+            <tr key={index}>
+              {columns.map((column) => (
+                <td key={column.key}>
+                  {column.render ? 
+                    column.render(packet, currentSequence.human_readable[index]) : 
+                    <TruncatedData data={packet[column.index]} />
+                  }
+                </td>
+              ))}
+            </tr>
+          ))}
         </tbody>
       </table>
-      <div className="pagination-controls">
-        <button className="themed_button" onClick={handlePreviousPacket} disabled={currentPacketIndex === 0}>Previous</button>
-        <span>Packet {currentPacketIndex + 1} of {data.length}</span>
-        <button className="themed_button" onClick={handleNextPacket} disabled={currentPacketIndex === data.length - 1}>Next</button>
-      </div>
+      {isMultiSequence && (
+        <div className="pagination-controls">
+          <button className="themed_button" onClick={handlePreviousSequence} disabled={currentSequenceIndex === 0}>Previous</button>
+          <span>Sequence {currentSequenceIndex + 1} of {data.length}</span>
+          <button className="themed_button" onClick={handleNextSequence} disabled={currentSequenceIndex === data.length - 1}>Next</button>
+        </div>
+      )}
     </div>
   );
 };

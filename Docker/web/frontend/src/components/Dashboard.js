@@ -28,8 +28,20 @@ const Dashboard = () => {
   const [displayedSequences, setDisplayedSequences] = useState([]);
   const [totalSequences, setTotalSequences] = useState(0);
   const [allAnomalousSequences, setAllAnomalousSequences] = useState([]);
+  const [selectedSequence, setSelectedSequence] = useState(null);
+  const [userRequestedUpdate, setUserRequestedUpdate] = useState(false);
+
 
   // Utility functions
+  const debounce = (func, wait) => {
+    let timeout;
+    return (...args) => {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => func.apply(this, args), wait);
+    };
+  };
+  
+  
   const getStatusClass = (status) => {
     if (status === 'healthy') return 'status-healthy';
     if (status === 'Unknown') return 'loading';
@@ -100,8 +112,13 @@ const Dashboard = () => {
     try {
       const response = await fetch(`http://localhost:5000/anomalous_sequences?page=${page}`);
       const data = await response.json();
-      setDisplayedSequences(data.sequences);
-      setTotalSequences(data.total);
+  
+      if (data && Array.isArray(data.sequences)) {
+        setDisplayedSequences(data.sequences);
+        setTotalSequences(data.total || 0);
+      } else {
+        console.error('Unexpected data format:', data);
+      }
     } catch (error) {
       console.error('Error fetching anomalous sequences:', error);
     }
@@ -120,7 +137,7 @@ const Dashboard = () => {
   };
 
   const handleRefreshAnomalousSequences = () => {
-    setDisplayedSequences(allAnomalousSequences.slice((currentPage - 1) * 5, currentPage * 5));
+    setUserRequestedUpdate(true);
   };
 
   // useEffect hooks
@@ -128,6 +145,15 @@ const Dashboard = () => {
     const newSocket = io("http://localhost:5000", {
       transports: ["websocket"],
     });
+
+    const handleAnomalousSequencesUpdate = debounce((data) => {
+      if (userRequestedUpdate && data && Array.isArray(data.sequences)) {
+        setAllAnomalousSequences(data.sequences);
+        setTotalSequences(data.total || 0);
+        setDisplayedSequences(data.sequences.slice((currentPage - 1) * 5, currentPage * 5));
+        setUserRequestedUpdate(false); // Reset the request flag after update
+      }
+    }, 300);
 
     newSocket.on("connect_error", (err) => {
       console.error("WebSocket connection error:", err);
@@ -138,17 +164,15 @@ const Dashboard = () => {
     newSocket.on("processed_sample_update", setProcessedSample);
     newSocket.on("anomaly_numbers_update", setAnomalyNumbers);
     newSocket.on("training_status_update", setTrainingStatus);
-    newSocket.on("anomalous_sequences_update", (data) => {
-      setAllAnomalousSequences(data.sequences);
-      setTotalSequences(data.total);
-    });
+    newSocket.on("anomalous_sequences_update", handleAnomalousSequencesUpdate);
 
     return () => {
       newSocket.disconnect();
     };
-  }, []);
+  }, [currentPage, userRequestedUpdate]);
 
   useEffect(() => {
+    console.log(`Fetching anomalous sequences for page ${currentPage}`);
     fetchAnomalousSequences(currentPage);
   }, [currentPage]);
 
@@ -202,18 +226,15 @@ const Dashboard = () => {
           <DataTable
             data={[rawSample]}
             columns={[
-              { key: 'id', label: 'Sequence ID' },
-              { key: 'timestamp', label: 'Time Stamp' },
-              { key: 'sequence', label: 'Sequence' },
-              ...(rawSample.human_readable ? Object.keys(rawSample.human_readable).map(key => ({
-                key: `human_readable.${key}`,
-                label: key,
-                render: (row) => {
-                  const humanReadableData = getValue(row, `human_readable.${key}`);
-                  return <TruncatedData data={humanReadableData} />;
-                }
-              })) : [])
+              { key: 'src_ip', label: 'Source IP', index: 0, render: (packet, human) => human.src_ip },
+              { key: 'dst_ip', label: 'Destination IP', index: 1, render: (packet, human) => human.dst_ip },
+              { key: 'protocol', label: 'Protocol', index: 5, render: (packet, human) => human.protocol },
+              { key: 'src_port', label: 'Source Port', index: 6, render: (packet, human) => human.src_port },
+              { key: 'dst_port', label: 'Destination Port', index: 7, render: (packet, human) => human.dst_port },
+              { key: 'flags', label: 'Flags', render: (packet, human) => human.flags },
+              // Add more columns as needed
             ]}
+            isMultiSequence={false}
           />
         ) : (
           <p className="loading">Loading raw data sample...</p>
@@ -227,20 +248,17 @@ const Dashboard = () => {
       <ResizableCard title="Processed Data Sample">
         {processedSample ? (
           <DataTable
-            data={[processedSample]}
-            columns={[
-              { key: 'id', label: 'Sequence ID' },
-              { key: 'timestamp', label: 'Timestamp' },
-              { key: 'sequence', label: 'Sequence' },
-              ...(processedSample.human_readable ? Object.keys(processedSample.human_readable).map(key => ({
-                key: `human_readable.${key}`,
-                label: key,
-                render: (row) => {
-                  const humanReadableData = getValue(row, `human_readable.${key}`);
-                  return <TruncatedData data={humanReadableData} />;
-                }
-              })) : [])
-            ]}
+          data={[processedSample]}
+          columns={[
+            { key: 'src_ip', label: 'Source IP', index: 0, render: (packet, human) => human.src_ip },
+            { key: 'dst_ip', label: 'Destination IP', index: 1, render: (packet, human) => human.dst_ip },
+            { key: 'protocol', label: 'Protocol', index: 5, render: (packet, human) => human.protocol },
+            { key: 'src_port', label: 'Source Port', index: 6, render: (packet, human) => human.src_port },
+            { key: 'dst_port', label: 'Destination Port', index: 7, render: (packet, human) => human.dst_port },
+            { key: 'flags', label: 'Flags', render: (packet, human) => human.flags },
+            // Add more columns as needed
+          ]}
+          isMultiSequence={false}
           />
         ) : (
           <p className="loading">Loading processed data sample...</p>
@@ -285,27 +303,65 @@ const Dashboard = () => {
     </div>
   );
 
+  const handleViewDetails = (sequence) => {
+    if (sequence && sequence.human_readable) {
+      setSelectedSequence(sequence.human_readable);
+    } else {
+      console.error('Invalid sequence data:', sequence);
+      setSelectedSequence(null);
+    }
+  };
+
+  const renderSequenceDetails = () => {
+    if (!selectedSequence) return null;
+  
+    return (
+      <div className="sequence-details-modal">
+        <h3>Sequence Details</h3>
+        <DataTable
+          data={selectedSequence}
+          columns={[
+            { key: 'src_ip', label: 'Source IP', render: (packet) => packet.src_ip },
+            { key: 'dst_ip', label: 'Destination IP', render: (packet) => packet.dst_ip },
+            { key: 'protocol', label: 'Protocol', render: (packet) => packet.protocol },
+            { key: 'src_port', label: 'Source Port', render: (packet) => packet.src_port },
+            { key: 'dst_port', label: 'Destination Port', render: (packet) => packet.dst_port },
+            { key: 'flags', label: 'Flags', render: (packet) => packet.flags },
+          ]}
+          isMultiSequence={true} // Set to true since it's an array of packets
+        />
+        <button onClick={() => setSelectedSequence(null)}>Close</button>
+      </div>
+    );
+  };
+
   const renderAnomalousSequencesCard = () => (
     <div key="anomalousSequences" className="dashboard-item">
       <ResizableCard title="Anomalous Sequences">
         {displayedSequences.length > 0 ? (
           <div>
-            <DataTable
-              data={displayedSequences}
-              columns={[
-                { key: 'id', label: 'Sequence ID' },
-                { key: 'reconstruction_error', label: 'Reconstruction Error' },
-                { key: 'is_anomaly', label: 'Is Anomaly' },
-                ...(displayedSequences[0].human_readable ? Object.keys(displayedSequences[0].human_readable).map(key => ({
-                  key: `human_readable.${key}`,
-                  label: key.replace('_', ' ').toUpperCase(),
-                  render: (row) => {
-                    const humanReadableData = getValue(row, `human_readable.${key}`);
-                    return <TruncatedData data={humanReadableData} />;
-                  }
-                })) : [])
-              ]}
-            />
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Sequence ID</th>
+                  <th>Reconstruction Error</th>
+                  <th>Is Anomaly</th>
+                  <th>Details</th>
+                </tr>
+              </thead>
+              <tbody>
+                {displayedSequences.map((sequence) => (
+                  <tr key={sequence.id}>
+                    <td>{sequence.id}</td>
+                    <td>{sequence.reconstruction_error}</td>
+                    <td>{sequence.is_anomaly ? 'Yes' : 'No'}</td>
+                    <td>
+                      <button onClick={() => handleViewDetails(sequence)}>View Details</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
             <div className="pagination-controls">
               <button className="themed_button" onClick={handlePreviousPage} disabled={currentPage === 1}>Previous</button>
               <span>Page {currentPage}</span>
@@ -350,6 +406,7 @@ const Dashboard = () => {
           renderAnomalousSequencesCard()
         ]}
       </div>
+      {renderSequenceDetails()}
     </div>
   );
 };
