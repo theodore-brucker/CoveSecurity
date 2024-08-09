@@ -25,6 +25,10 @@ RETRY_DELAY = int(os.getenv('RETRY_DELAY', '2'))
 DATA_PROCESSING_URL = os.getenv('DATA_PROCESSING_URL', 'http://172.17.0.1:5001')
 ALLOWED_EXTENSIONS = {'pcap'}
 
+SEQUENCE_LENGTH = int(os.getenv('SEQUENCE_LENGTH', '16'))
+FEATURE_COUNT = int(os.getenv('FEATURE_COUNT', '12'))
+
+
 # GLOBAL VARIABLES
 last_raw_data_time = None
 last_processed_data_time = None
@@ -34,8 +38,8 @@ model_training = False
 total_predictions = 0
 normal_predictions = 0
 anomalous_predictions = 0
-anomalous_packets = []
-logging.basicConfig(level=logging.DEBUG)
+anomalous_sequences = []
+logging.basicConfig(level=logging.INFO)
 
 ##########################################
 # PCAP UPLOADER
@@ -136,7 +140,7 @@ def handle_connect():
     threading.Thread(target=emit_processed_sample).start()
     threading.Thread(target=emit_anomaly_numbers).start()
     threading.Thread(target=emit_data_flow_health).start()
-    threading.Thread(target=emit_anomalous_packets).start()
+    threading.Thread(target=emit_anomalous_sequences).start()
 
 @app.route('/training_start', methods=['POST'])
 def start_training():
@@ -194,16 +198,16 @@ def get_model_status():
     except requests.RequestException as e:
         return jsonify({"status": "error", "message": f"Error fetching status: {str(e)}"}), 500
 
-@app.route('/anomalous_packets', methods=['GET'])
-def get_paginated_anomalous_packets():
+@app.route('/anomalous_sequences', methods=['GET'])
+def get_paginated_anomalous_sequences():
     page = int(request.args.get('page', 1))
     per_page = 5
     start = (page - 1) * per_page
     end = start + per_page
-    packets = anomalous_packets[start:end]
+    sequences = anomalous_sequences[start:end]
     return jsonify({
-        'packets': packets,
-        'total': len(anomalous_packets),
+        'sequences': sequences,
+        'total': len(anomalous_sequences),
         'page': page,
         'per_page': per_page
     })
@@ -212,19 +216,32 @@ def get_paginated_anomalous_packets():
 # GETTERS
 ##########################################
 
-def get_anomalous_packets():
-    global anomalous_packets, last_prediction_data_time
+def validate_data_size(data):
+    if len(data['sequence']) != SEQUENCE_LENGTH:
+        logging.error(f"Invalid sequence length: {len(data['sequence'])} != {SEQUENCE_LENGTH}")
+        return False
+    if len(data['sequence'][0]) != FEATURE_COUNT:
+        logging.error(f"Invalid feature count: {len(data['sequence'][0])} != {FEATURE_COUNT}")
+        return False
+    return True
+
+def get_anomalous_sequences():
+    global anomalous_sequences, last_prediction_data_time
     consumer = consumer_manager.get_consumer(PREDICTION_TOPIC, 'anomalous_prediction_consumer_group')
-    msg = consumer.poll(0.01)
-    if msg is None or msg.error():
-        return anomalous_packets  # Return existing packets even if no new ones
-    last_prediction_data_time = datetime.now()
-    prediction = json.loads(msg.value().decode('utf-8'))
-    if prediction.get('is_anomaly'):
-        anomalous_packets.append(prediction)
-        # Keep only the last 100 anomalous packets
-        anomalous_packets = anomalous_packets[-100:]
-    return anomalous_packets
+    anomalous_sequences = []
+    while True:
+        msg = consumer.poll(0.01)
+        if msg is None or msg.error():
+            break
+        last_prediction_data_time = datetime.now()
+        prediction = json.loads(msg.value().decode('utf-8'))
+        if prediction.get('is_anomaly'):
+            anomalous_sequences.append({
+                'id': prediction['id'],
+                'reconstruction_error': prediction['reconstruction_error'],
+                'human_readable': prediction['human_readable']
+            })
+    return anomalous_sequences
 
 def get_raw_sample():
     global last_raw_data_time
@@ -237,12 +254,13 @@ def get_raw_sample():
     try:
         value = json.loads(msg.value().decode('utf-8'))
         logging.debug(f"Human readable features: {value.get('human_readable', {})}")
-        return {
-            'id': value['id'],
-            'time': value['time'],
-            'data': value['data'][:20] + '...',
-            'human_readable': value.get('human_readable', {})  # Ensure human_readable is included
-        }
+        if value and validate_data_size(value):
+            return {
+                'id': value['id'],
+                'timestamp': value['timestamp'],
+                'sequence': value['sequence'],
+                'human_readable': value.get('human_readable', {})
+            }
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         logging.error(f"Error parsing raw sample: {e}")
         return None
@@ -257,12 +275,14 @@ def get_processed_sample():
     last_processed_data_time = datetime.now()
     try:
         value = json.loads(msg.value().decode('utf-8'))
-        return {
-            'id': value['id'],
-            'timestamp': value['timestamp'],
-            'features': value['features'],
-            'human_readable': value.get('human_readable', {})  # Ensure human_readable is included
-        }
+        logging.debug(f"Human readable features: {value.get('human_readable', {})}")
+        if value and validate_data_size(value):
+            return {
+                'id': value['id'],
+                'timestamp': value['timestamp'],
+                'sequence': value['sequence'],
+                'human_readable': value.get('human_readable', {})  # Ensure human_readable is included
+            }
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         logging.error(f"Error parsing processed sample: {e}")
         return None
@@ -280,13 +300,19 @@ def get_training_sample():
             return None
         last_training_data_time = datetime.now()
         empty_poll_count = 0
-        value = json.loads(msg.value().decode('utf-8'))
-        return {
-            'id': value['id'],
-            'timestamp': value['timestamp'],
-            'features': value['features'],
-            'human_readable': value['human_readable']
-        }
+        try:
+            value = json.loads(msg.value().decode('utf-8'))
+            logging.debug(f"Human readable features: {value.get('human_readable', {})}")
+            if value and validate_data_size(value):
+                return {
+                    'id': value['id'],
+                    'timestamp': value['timestamp'],
+                    'sequence': value['sequence'],
+                    'human_readable': value['human_readable']
+                }
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logging.error(f"Error parsing training sample: {e}")
+            return None
 
 def get_anomaly_numbers():
     global last_prediction_data_time, total_predictions, normal_predictions, anomalous_predictions
@@ -333,17 +359,17 @@ def get_data_flow_health():
 # EMITTERS
 ##########################################
 
-def emit_anomalous_packets():
+def emit_anomalous_sequences():
     with app.app_context():
         while True:
             try:
-                packets = get_anomalous_packets()
-                socketio.emit('anomalous_packets_update', {
-                    'total': len(packets),
-                    'packets': packets[-5:]  # Send only the 5 most recent packets
+                anomalous_sequences = get_anomalous_sequences()
+                socketio.emit('anomalous_sequences_update', {
+                    'total': len(anomalous_sequences),
+                    'sequences': anomalous_sequences[-5:]  # Send only the 5 most recent anomalous sequences
                 })
             except Exception as e:
-                logging.error(f"Error in emit_anomalous_packets: {e}")
+                logging.error(f"Error in emit_anomalous_sequences: {e}")
             socketio.sleep(1)
 
 def emit_health_status():
@@ -364,9 +390,9 @@ def emit_raw_sample():
                 if sample:
                     socketio.emit('raw_sample_update', {
                         'id': sample['id'],
-                        'time': sample['time'],
-                        'data': sample['data'][:20] + '...',  # Truncate the data for display
-                        'human_readable': sample['human_readable']  # Include human_readable
+                        'timestamp': sample['timestamp'],
+                        'sequence': sample['sequence'],
+                        'human_readable': sample['human_readable']
                     })
             except Exception as e:
                 logging.error(f"Error in emit_raw_sample: {e}")
@@ -381,8 +407,8 @@ def emit_processed_sample():
                     socketio.emit('processed_sample_update', {
                         'id': sample['id'],
                         'timestamp': sample['timestamp'],
-                        'features': sample['features'],
-                        'human_readable': sample['human_readable']  # Include human_readable
+                        'sequence': sample['sequence'],
+                        'human_readable': sample['human_readable']
                     })
             except Exception as e:
                 logging.error(f"Error in emit_processed_sample: {e}")
@@ -397,8 +423,8 @@ def emit_training_sample():
                     socketio.emit('processed_training_update', {
                         'id': sample['id'],
                         'timestamp': sample['timestamp'],
-                        'features': sample['features'],
-                        'human_readable': sample['human_readable']  # Include human_readable
+                        'sequence': sample['sequence'],
+                        'human_readable': sample['human_readable']
                     })
             except Exception as e:
                 logging.error(f"Error in emit_training_sample: {e}")

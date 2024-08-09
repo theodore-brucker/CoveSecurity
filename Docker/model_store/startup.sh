@@ -5,7 +5,7 @@
 sleep 5
 
 # Example of deregistering the existing model if it exists
-MODEL_NAME="memory_autoencoder"
+MODEL_NAME="transformer_autoencoder"
 MODEL_VERSION="1.0"
 
 # Check if the model version is already registered
@@ -16,7 +16,7 @@ if [[ $EXISTING_MODEL == *"${MODEL_NAME}"* ]]; then
 fi
 
 # Register the new model
-curl -X POST "http://localhost:8081/models?url=memory_autoencoder.mar&initial_workers=1&synchronous=true"
+curl -X POST "http://localhost:8081/models?url=${MODEL_NAME}}.mar&initial_workers=1&synchronous=true"
 
 # Starting TorchServe
 torchserve --start --model-store /home/model-server/model-store --ts-config /home/model-server/config.properties
