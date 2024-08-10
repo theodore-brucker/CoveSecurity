@@ -2,6 +2,8 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { io } from "socket.io-client";
 import ResizableCard from './ResizableCard';
 import DataTable from './DataTable';
+import logo from './Expanded-Cove-Logo.jpg';
+
 
 const Dashboard = () => {
   // State variables
@@ -404,13 +406,17 @@ const Dashboard = () => {
     </div>
   );
 
+  const renderLogoCard = () => (
+    <div key="logoCard" className="dashboard-item logo-card">
+      <img src={logo} alt="Cove Security Logo" className="dashboard-logo" />
+    </div>
+  );
+
   // Main render function
   return (
     <div className="container">
-      <header className="header">
-        <h1>MLSEC</h1>
-      </header>
       <div className="dashboard">
+        {renderLogoCard()}
         {[
           renderTrainModelCard(),
           renderAnomalyNumbersCard(),
