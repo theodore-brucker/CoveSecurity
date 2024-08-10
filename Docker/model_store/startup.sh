@@ -1,7 +1,6 @@
 #!/bin/bash
 
 # Your custom startup commands
-
 sleep 5
 
 # Example of deregistering the existing model if it exists
@@ -16,7 +15,7 @@ if [[ $EXISTING_MODEL == *"${MODEL_NAME}"* ]]; then
 fi
 
 # Register the new model
-curl -X POST "http://localhost:8081/models?url=${MODEL_NAME}}.mar&initial_workers=1&synchronous=true"
+curl -X POST "http://localhost:8081/models?url=${MODEL_NAME}.mar&initial_workers=1&synchronous=true"
 
 # Starting TorchServe
 torchserve --start --model-store /home/model-server/model-store --ts-config /home/model-server/config.properties

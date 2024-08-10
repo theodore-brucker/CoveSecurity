@@ -320,9 +320,12 @@ const Dashboard = () => {
   const renderAnomalousSequencesCard = () => (
     <div key="anomalousSequences" className="dashboard-item">
       <ResizableCard title="Anomalous Sequences">
-        {isRefreshing ? (
-          <p>Refreshing data...</p>
-        ) : displayedSequences.length > 0 ? (
+        {selectedSequence ? (
+          <SequenceDetails
+            sequence={selectedSequence}
+            onBack={() => setSelectedSequence(null)}
+          />
+        ) : (
           <div>
             <table className="data-table">
               <thead>
@@ -334,10 +337,10 @@ const Dashboard = () => {
               </thead>
               <tbody>
                 {displayedSequences.map((sequence) => (
-                  <tr key={sequence.id}>
+                  <tr key={sequence.id} onClick={() => setSelectedSequence(sequence)} style={{cursor: 'pointer'}}>
                     <td>{sequence.id}</td>
                     <td>{sequence.reconstruction_error.toFixed(4)}</td>
-                    <td>{sequence.is_anomaly ? 'No' : 'Yes'}</td>
+                    <td>{sequence.is_anomaly ? 'Yes' : 'No'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -349,15 +352,43 @@ const Dashboard = () => {
             </div>
             <button className="refresh-button" onClick={handleRefreshAnomalousSequences}>Refresh Data</button>
           </div>
-        ) : (
-          <div>
-            <p className="loading">No anomalous sequences detected yet...</p>
-            <button className="refresh-button" onClick={handleRefreshAnomalousSequences}>Refresh Data</button>
-          </div>
         )}
       </ResizableCard>
     </div>
   );
+
+  const SequenceDetails = ({ sequence, onBack }) => {
+    // Prepare the data in the format expected by DataTable
+    const formattedData = [{
+      id: sequence.id,
+      sequence: sequence.human_readable.map(packet => 
+        // Create a dummy 'sequence' array to match the expected structure
+        [packet.src_ip, packet.dst_ip, '', '', '', packet.protocol, packet.src_port, packet.dst_port]
+      ),
+      human_readable: sequence.human_readable
+    }];
+  
+    return (
+      <div>
+        <button className="themed_button" onClick={onBack}>Back to List</button>
+        <h3>Sequence ID: {sequence.id}</h3>
+        <p>Reconstruction Error: {sequence.reconstruction_error.toFixed(4)}</p>
+        <p>Is Anomaly: {sequence.is_anomaly ? 'Yes' : 'No'}</p>
+        <DataTable
+          data={formattedData}
+          columns={[
+            { key: 'src_ip', label: 'Source IP', index: 0, render: (packet, human) => human.src_ip },
+            { key: 'dst_ip', label: 'Destination IP', index: 1, render: (packet, human) => human.dst_ip },
+            { key: 'protocol', label: 'Protocol', index: 5, render: (packet, human) => human.protocol },
+            { key: 'src_port', label: 'Source Port', index: 6, render: (packet, human) => human.src_port },
+            { key: 'dst_port', label: 'Destination Port', index: 7, render: (packet, human) => human.dst_port },
+            { key: 'flags', label: 'Flags', render: (packet, human) => human.flags },
+          ]}
+          isMultiSequence={false}
+        />
+      </div>
+    );
+  };
 
   const TrainingStatusDisplay = ({ status, progress, message }) => (
     <div className="training-status">
@@ -381,12 +412,12 @@ const Dashboard = () => {
       </header>
       <div className="dashboard">
         {[
-          renderDataFlowHealthCard(),
-          renderAnomalyNumbersCard(),
-          renderRawSampleCard(),
-          renderProcessedSampleCard(),
           renderTrainModelCard(),
-          renderAnomalousSequencesCard()
+          renderAnomalyNumbersCard(),
+          renderAnomalousSequencesCard(),
+          renderDataFlowHealthCard(),
+          renderRawSampleCard(),
+          renderProcessedSampleCard()
         ]}
       </div>
     </div>
