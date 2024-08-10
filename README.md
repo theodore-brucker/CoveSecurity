@@ -1,5 +1,5 @@
-# MLSec
+# Cove Security
 
 ## Mission Statement
 
-Our mission is to create a powerful machine-learning application that learns network traffic patterns and detects intrusions in real-time. By leveraging advanced algorithms and real-time data processing, we aim to enhance cybersecurity and provide robust protection against emerging threats, ensuring the integrity and security of digital infrastructure.
+Our mission is to create a machine-learning-powered IDS that has no competition in its price range. Cove learns intricate network traffic patterns and detects novel and known attacks with increasing accuracy as it analyzes and learns a better and better representation of the network that it lives in. This technology is currently only affordable to enterprise-class organizations. That is about to change.
