@@ -1,0 +1,17 @@
+{
+    "v1": {
+      "checkpoint_path": "/home/model-server/checkpoints/checkpoint_20230101_120000.pth",
+      "performance_metrics": {
+        "validation_loss": 0.1234
+      },
+      "creation_date": "2023-01-01 12:00:00"
+    },
+    "v2": {
+      "checkpoint_path": "/home/model-server/checkpoints/checkpoint_20230102_140000.pth",
+      "performance_metrics": {
+        "validation_loss": 0.1000
+      },
+      "creation_date": "2023-01-02 14:00:00"
+    },
+    "latest": "v2"
+  }

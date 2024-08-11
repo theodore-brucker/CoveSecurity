@@ -415,8 +415,8 @@ const Dashboard = () => {
   // Main render function
   return (
     <div className="container">
+      {renderLogoCard()}
       <div className="dashboard">
-        {renderLogoCard()}
         {[
           renderTrainModelCard(),
           renderAnomalyNumbersCard(),

@@ -14,6 +14,8 @@ COPY custom_handler.py /home/model-server/
 COPY transformer_autoencoder.py /home/model-server/
 COPY transformer_autoencoder.mar /home/model-server/model-store/
 COPY config.properties /home/model-server/config.properties
+COPY /model-registry/ /home/model-server/
+COPY /config/ /home/model-server/
 
 # Install any needed packages specified in requirements.txt
 COPY requirements.txt /home/model-server/

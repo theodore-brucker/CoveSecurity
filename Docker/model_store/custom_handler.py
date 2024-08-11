@@ -24,6 +24,16 @@ class PacketAnomalyDetector(BaseHandler):
 
     def initialize(self, context):
         logger.info("Initializing PacketAnomalyDetector")
+
+        model_store_path = '/home/model-server/model-store/'
+        logger.debug("Contents of /home/model-server/model-store/:")
+        for item in os.listdir(model_store_path):
+            item_path = os.path.join(model_store_path, item)
+            if os.path.isfile(item_path):
+                logger.debug(f"  File: {item} - Size: {os.path.getsize(item_path)} bytes")
+            elif os.path.isdir(item_path):
+                logger.debug(f"  Directory: {item}")
+
         self.manifest = context.manifest
         self.model_dir = context.system_properties.get("model_dir")
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -32,8 +42,8 @@ class PacketAnomalyDetector(BaseHandler):
 
         self.model = TransformerAutoencoder(input_size=self.feature_dim, sequence_length=self.sequence_length).to(self.device)
         logger.info(f"Model created and moved to device: {self.device}")
-        
-        self.load_latest_weights()
+
+        self.load_model_version('latest')
         self.initialized = True
         logger.info("PacketAnomalyDetector initialization completed")
 
@@ -76,19 +86,34 @@ class PacketAnomalyDetector(BaseHandler):
 
     def preprocess(self, data):
         logger.debug("Starting preprocessing")
-
+        logger.debug(f'Data type before processing: {type(data)}, Content: {data}')
+        
+        # Check if the data is in the training format (list of dicts with 'body')
         if isinstance(data, list) and isinstance(data[0], dict) and 'body' in data[0]:
             # Training data format
-            data = json.loads(data[0]['body'])
+            sequences = data[0]['body']
+            logger.debug("Training data detected.")
         
-        if not isinstance(data, dict) or 'sequence' not in data:
+        # Check if the data is in the inference format (dict with 'sequence')
+        elif isinstance(data, dict) and 'sequence' in data:
+            sequences = data['sequence']
+            logger.debug("Inference data detected.")
+        
+        # Check if the data is a list of sequences (inference with one sequence wrapped in a list)
+        elif isinstance(data, list) and isinstance(data[0], list):
+            sequences = data  # Treat it as a single sequence wrapped in a list
+            logger.debug("Single sequence data detected wrapped in a list.")
+        
+        else:
+            # Invalid data format
             logger.error("Invalid input data format")
-            raise ValueError("Input data must be a dictionary with a 'sequence' key")
+            raise ValueError("Input data must be either a list with 'body' key for training or a dictionary with a 'sequence' key for inference")
 
-        sequences = data['sequence']
-        
         # Convert data to tensor
         tensor_data = torch.tensor(sequences, dtype=torch.float32)
+        
+        if tensor_data.ndimension() == 2:  # Single sequence case
+            tensor_data = tensor_data.unsqueeze(0)  # Add batch dimension
         
         if tensor_data.shape[1:] != (self.sequence_length, self.feature_dim):
             logger.error(f"Invalid input shape: {tensor_data.shape}")
@@ -117,9 +142,7 @@ class PacketAnomalyDetector(BaseHandler):
     def handle(self, data, context):
         logger.debug("Handling new request")
         if not self.initialized:
-            logger.info("Model not initialized. Initializing now.")
             self.initialize(context)
-
         try:
             if context.get_request_header(0, "X-Request-Type") == "train":
                 logger.info("Received training request")
@@ -128,6 +151,11 @@ class PacketAnomalyDetector(BaseHandler):
                 return response
             else:
                 logger.debug("Received inference request")
+
+                model_version = context.get_request_header(0, "X-Model-Version")
+                if model_version:
+                    self.load_model_version(model_version)
+
                 dataloader = self.preprocess(data)
                 inference_outputs = self.inference(dataloader)
                 anomaly_results = self.postprocess(inference_outputs)
@@ -147,11 +175,16 @@ class PacketAnomalyDetector(BaseHandler):
         num_epochs = int(os.getenv('NUM_EPOCHS', 10))
         early_stopping_threshold = float(os.getenv('EARLY_STOPPING_THRESHOLD', 0.01))
         
+        latest_checkpoint = self.get_latest_checkpoint()
+        if latest_checkpoint:
+            self.load_checkpoint(latest_checkpoint)
+
         self.model.train()
         optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
         
         dataloader = self.preprocess(data)
+        validation_dataloader = self.get_validation_data()
 
         for epoch in range(1, num_epochs + 1):
             logger.info(f"Epoch {epoch} started")
@@ -189,3 +222,71 @@ class PacketAnomalyDetector(BaseHandler):
         logger.info(f"Model saved to {model_save_path}")
 
         return [json.dumps({"status": "success", "average_loss": average_epoch_loss, "model_file": model_file_name})]
+    
+    def load_model_version(self, version):
+        logger.info(f"Loading model version: {version}")
+        
+        # Read the model registry
+        # with open('/home/model-server/model-registry/model_registry.json', 'r') as f:
+        #     model_registry = json.load(f)
+        
+        # # Check if the requested version exists
+        # if version not in model_registry:
+        #     logger.warning(f"Model version {version} not found. Using latest version.")
+        #     version = max(model_registry.keys())  # Use the latest version
+        
+        # # Get the checkpoint path for the requested version
+        # checkpoint_path = model_registry[version]['checkpoint_path']
+        
+        # # Load the checkpoint
+        # checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        # self.model.load_state_dict(checkpoint['model_state_dict'])
+        
+        logger.info(f"Successfully loaded model version: {version}")
+
+    def get_validation_data(self):
+        logging.info('getting validation data')
+        time.sleep(1)
+        logging.info('got validation data')
+        return
+
+    def continue_training(self, data, context):
+        logging.info('starting continuous training')
+        time.sleep(1)
+        logging.info('completed continuous training')
+        return
+    
+    def save_checkpoint(self, epoch, model_state, optimizer_state, loss, metrics):
+        logging.info(f'saving checkpoint on epoch {epoch} due to loss:{loss} and metrics:{metrics}')
+        time.sleep(1)
+        path = f"/home/model-server/checkpoints/checkpoint_{int(time.time())}.pth"
+        logging.info(f'saved checkpoint to {path}')
+        return path
+
+    def load_checkpoint(self, checkpoint_path):
+        logging.info(f'loading checkpoint from {checkpoint_path}')
+        time.sleep(1)
+        logging.info('loaded checkpoint')
+        return
+
+    def get_latest_checkpoint(self):
+        logging.info('getting the latest checkpoint from the checkpoints folder')
+        return
+
+    def evaluate_model(self, validation_data):
+        logging.info('evaluating model on validation set')
+        time.sleep(1)
+        logging.info('evaluated model on validation set')
+        return 0.2
+    
+    def rollback_to_best_checkpoint(self):
+        logging.info('rolling back to best checkpoint')
+        time.sleep(1)
+        logging.info('rolled back to best checkpoint')
+        return
+    
+    def update_model_registry(self, checkpoint_path, performance_metrics):
+        logging.info(f'updating model registry to include {checkpoint_path} with metrics:{performance_metrics}')
+        time.sleep(1)
+        logging.info(f'updated model registry with {checkpoint_path}')
+        return

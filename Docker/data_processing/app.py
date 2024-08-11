@@ -624,9 +624,6 @@ def fetch_training_data():
             except Exception as e:
                 logging.error(f"Unexpected error processing message fetching training data: {e}")
 
-            if is_full_sequence(data):
-                break
-
     finally:
         consumer.close()
     
