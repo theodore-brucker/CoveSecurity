@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import time
+import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 from ts.torch_handler.base_handler import BaseHandler
@@ -9,8 +10,9 @@ from transformer_autoencoder import TransformerAutoencoder
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+ANOMALY_THRESHOLD = float(os.getenv('ANOMALY_THRESHOLD', 1))
 
-class PacketAnomalyDetector(BaseHandler):
+class SequenceAnomalyDetector(BaseHandler):
     def __init__(self):
         super().__init__()
         self.model = None
@@ -20,10 +22,10 @@ class PacketAnomalyDetector(BaseHandler):
         self.feature_dim = 12
         self.model_dir = None
         self.weights_file = None
-        logger.info("PacketAnomalyDetector initialized")
+        self.anomaly_threshold = ANOMALY_THRESHOLD
 
     def initialize(self, context):
-        logger.info("Initializing PacketAnomalyDetector")
+        logger.info("Initializing SequenceAnomalyDetector")
 
         model_store_path = '/home/model-server/model-store/'
         logger.debug("Contents of /home/model-server/model-store/:")
@@ -45,7 +47,7 @@ class PacketAnomalyDetector(BaseHandler):
 
         self.load_model_version('latest')
         self.initialized = True
-        logger.info("PacketAnomalyDetector initialization completed")
+        logger.info("SequencecAnomalyDetector initialization completed")
 
     def load_latest_weights(self):
         if not self.model_dir:
@@ -92,23 +94,18 @@ class PacketAnomalyDetector(BaseHandler):
         if isinstance(data, list) and isinstance(data[0], dict) and 'body' in data[0]:
             # Training data format
             sequences = data[0]['body']
-            logger.debug("Training data detected.")
-        
-        # Check if the data is in the inference format (dict with 'sequence')
-        elif isinstance(data, dict) and 'sequence' in data:
-            sequences = data['sequence']
-            logger.debug("Inference data detected.")
-        
+            logger.debug("Data is a dictionary with a body field, likely for training")
         # Check if the data is a list of sequences (inference with one sequence wrapped in a list)
-        elif isinstance(data, list) and isinstance(data[0], list):
+        elif isinstance(data, list) and isinstance(data[0], list) and len(data) > 0:
             sequences = data  # Treat it as a single sequence wrapped in a list
-            logger.debug("Single sequence data detected wrapped in a list.")
+            logger.debug("Data is a list with a sequence, likely for inference")
         
         else:
             # Invalid data format
             logger.error("Invalid input data format")
-            raise ValueError("Input data must be either a list with 'body' key for training or a dictionary with a 'sequence' key for inference")
+            raise ValueError("Input data must be a dictionary with a body key")
 
+        logging.debug(sequences)
         # Convert data to tensor
         tensor_data = torch.tensor(sequences, dtype=torch.float32)
         
@@ -120,7 +117,8 @@ class PacketAnomalyDetector(BaseHandler):
             raise ValueError(f"Each sequence must have shape ({self.sequence_length}, {self.feature_dim})")
 
         dataset = TensorDataset(tensor_data)
-        dataloader = DataLoader(dataset, batch_size=32, shuffle=False)
+        batch_size = 1 if len(dataset) == 1 else 32
+        dataloader = DataLoader(dataset, batch_size, shuffle=False)
         
         logger.info(f"Preprocessing completed. DataSet size: {len(dataset)}, DataLoader batches: {len(dataloader)}")
         return dataloader
@@ -169,6 +167,21 @@ class PacketAnomalyDetector(BaseHandler):
             logger.error(f"Error handling request: {str(e)}", exc_info=True)
             return [json.dumps({"status": "error", "message": str(e)})]
 
+    def set_threshold(self, train_dataloader, percentile=90):
+        self.model.eval()
+        reconstruction_errors = []
+
+        with torch.no_grad():
+            for inputs in train_dataloader:
+                inputs = inputs[0].to(self.device)
+                outputs, _ = self.model(inputs)
+                recon_error = self.model.compute_batch_error((outputs, None), inputs)
+                reconstruction_errors.extend(recon_error.cpu().numpy())
+
+        threshold = np.percentile(reconstruction_errors, percentile)
+        logger.info(f"Threshold set at the {percentile}th percentile: {threshold}")
+        return threshold
+
     def train(self, data, context):
         logger.info("Starting model training")
 
@@ -181,7 +194,7 @@ class PacketAnomalyDetector(BaseHandler):
 
         self.model.train()
         optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
         
         dataloader = self.preprocess(data)
         validation_dataloader = self.get_validation_data()
@@ -196,6 +209,11 @@ class PacketAnomalyDetector(BaseHandler):
                 optimizer.zero_grad()
                 outputs, _ = self.model(batch)
                 loss = self.model.compute_loss((outputs, None), batch)
+
+                logger.debug(f"Model outputs: {outputs}")
+                logger.debug(f"Batch inputs: {batch}")
+                logger.debug(f"Batch loss: {loss.item()}")
+
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 optimizer.step()
@@ -203,7 +221,7 @@ class PacketAnomalyDetector(BaseHandler):
                 epoch_loss += loss.item()
                 num_batches += 1
                 
-                logger.info(f"Epoch {epoch}, Batch {num_batches}, Loss: {loss.item()}")
+                logger.debug(f"Epoch {epoch}, Batch {num_batches}, Loss: {loss.item()}")
 
             average_epoch_loss = epoch_loss / num_batches if num_batches > 0 else 0
             logger.info(f"Epoch {epoch} completed. Average loss: {average_epoch_loss}")
@@ -214,6 +232,10 @@ class PacketAnomalyDetector(BaseHandler):
                 logger.info(f"Early stopping triggered at epoch {epoch} with average loss {average_epoch_loss}")
                 break
 
+        # After training, set a dynamic threshold based on the training data
+        self.anomaly_threshold = self.set_threshold(dataloader)
+        logger.info(f"Dynamic anomaly threshold set to: {self.anomaly_threshold}")
+
         # Save the model
         timestamp = f"{time.time():.2f}".replace('.', '_')
         model_file_name = f'transformer_autoencoder_{timestamp}.pth'
@@ -222,6 +244,7 @@ class PacketAnomalyDetector(BaseHandler):
         logger.info(f"Model saved to {model_save_path}")
 
         return [json.dumps({"status": "success", "average_loss": average_epoch_loss, "model_file": model_file_name})]
+
     
     def load_model_version(self, version):
         logger.info(f"Loading model version: {version}")
