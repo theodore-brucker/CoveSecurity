@@ -68,7 +68,7 @@ services:
       - "8082:8082"
     environment:
       - EARLY_STOPPING_THRESHOLD=.001
-      - NUM_EPOCHS=10
+      - NUM_EPOCHS=100
       - SEQUENCE_LENGTH=16
     volumes:
       - ./model_store:/home/model-server/model-store
@@ -140,6 +140,7 @@ services:
       - MODEL_NAME=transformer_autoencoder
       - training_data:/app/training_data
       - SEQUENCE_LENGTH=16
+      - FEATURE_COUNT=12
       - FLASK_PORT=5001 # Where this app is going to be served on http://172.17.0.1
     depends_on:
       - kafka
