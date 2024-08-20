@@ -70,6 +70,8 @@ services:
       - EARLY_STOPPING_THRESHOLD=.001
       - NUM_EPOCHS=100
       - SEQUENCE_LENGTH=16
+      - FEATURE_COUNT=12
+      - MODEL_STORE_PATH=/home/model-server/model-store/
     volumes:
       - ./model_store:/home/model-server/model-store
       - scaler_data:/home/model-server/scaler_data

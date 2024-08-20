@@ -1,0 +1,10 @@
+{
+  "v1": {
+      "checkpoint_path": "/home/model-server/checkpoints/transformer_autoencoder_1724018419_49.pth",
+      "performance_metrics": {
+          "validation_loss": 0.1234
+      },
+      "creation_date": "2023-01-01 12:00:00"
+  },
+  "latest": "v1"
+}

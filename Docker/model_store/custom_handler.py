@@ -11,6 +11,9 @@ from transformer_autoencoder import TransformerAutoencoder
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 ANOMALY_THRESHOLD = float(os.getenv('ANOMALY_THRESHOLD', 1))
+SEQUENCE_LENGTH = int(os.getenv('SEQUENCE_LENGTH', 16))
+FEATURE_COUNT = int(os.getenv('FEATURE_COUNT', 12))
+MODEL_STORE_PATH = os.getenv('MODEL_STORE_PATH', '/home/model-server/model-store/')
 
 class SequenceAnomalyDetector(BaseHandler):
     def __init__(self):
@@ -18,19 +21,20 @@ class SequenceAnomalyDetector(BaseHandler):
         self.model = None
         self.device = None
         self.initialized = False
-        self.sequence_length = 16
-        self.feature_dim = 12
+        self.sequence_length = SEQUENCE_LENGTH
+        self.feature_dim = FEATURE_COUNT
         self.model_dir = None
         self.weights_file = None
         self.anomaly_threshold = ANOMALY_THRESHOLD
+        self.model_store_path = MODEL_STORE_PATH
+        self.model_checkpoints_path = os.path.join(self.model_store_path, 'checkpoints/')
 
     def initialize(self, context):
         logger.info("Initializing SequenceAnomalyDetector")
 
-        model_store_path = '/home/model-server/model-store/'
-        logger.debug("Contents of /home/model-server/model-store/:")
-        for item in os.listdir(model_store_path):
-            item_path = os.path.join(model_store_path, item)
+        logger.debug(f'Contents of {self.model_store_path}:')
+        for item in os.listdir(self.model_store_path):
+            item_path = os.path.join(self.model_store_path, item)
             if os.path.isfile(item_path):
                 logger.debug(f"  File: {item} - Size: {os.path.getsize(item_path)} bytes")
             elif os.path.isdir(item_path):
@@ -54,15 +58,14 @@ class SequenceAnomalyDetector(BaseHandler):
             logger.error("model_dir is not set")
             return
 
-        model_store_dir = "/home/model-server/model-store"
-        pth_files = [f for f in os.listdir(model_store_dir) if f.endswith('.pth')]
+        pth_files = [f for f in os.listdir(self.model_store_dir) if f.endswith('.pth')]
         if not pth_files:
             logger.warning("No .pth files found in the model directory")
             self.weights_file = None
             return
 
-        latest_file = max(pth_files, key=lambda f: os.path.getmtime(os.path.join(model_store_dir, f)))
-        self.weights_file = os.path.join(model_store_dir, latest_file)
+        latest_file = max(pth_files, key=lambda f: os.path.getmtime(os.path.join(self.model_store_dir, f)))
+        self.weights_file = os.path.join(self.model_store_dir, latest_file)
         logger.info(f"Loading weights from: {self.weights_file}")
 
         try:
@@ -239,39 +242,61 @@ class SequenceAnomalyDetector(BaseHandler):
         # Save the model
         timestamp = f"{time.time():.2f}".replace('.', '_')
         model_file_name = f'transformer_autoencoder_{timestamp}.pth'
-        model_save_path = os.path.join('/home/model-server/model-store', model_file_name)
-        torch.save(self.model.state_dict(), model_save_path)
-        logger.info(f"Model saved to {model_save_path}")
+        model_save_path = os.path.join(self.model_checkpoints_path, model_file_name)  # Ensure this path is correct
+        torch.save(self.model.state_dict(), self.model_checkpoints_path)
+        logger.info(f"Model saved to {self.model_checkpoints_path}")
+
+        # Update the model registry
+        self.update_model_registry(model_file_name, average_epoch_loss)
 
         return [json.dumps({"status": "success", "average_loss": average_epoch_loss, "model_file": model_file_name})]
 
-    
     def load_model_version(self, version):
         logger.info(f"Loading model version: {version}")
         
         # Read the model registry
-        # with open('/home/model-server/model-registry/model_registry.json', 'r') as f:
-        #     model_registry = json.load(f)
+        registry_path = '/home/model-server/model-registry/model_registry.json'
+        logger.debug(f"Reading model registry from: {registry_path}")
         
-        # # Check if the requested version exists
-        # if version not in model_registry:
-        #     logger.warning(f"Model version {version} not found. Using latest version.")
-        #     version = max(model_registry.keys())  # Use the latest version
-        
-        # # Get the checkpoint path for the requested version
-        # checkpoint_path = model_registry[version]['checkpoint_path']
-        
-        # # Load the checkpoint
-        # checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        # self.model.load_state_dict(checkpoint['model_state_dict'])
-        
-        logger.info(f"Successfully loaded model version: {version}")
+        try:
+            with open(registry_path, 'r') as f:
+                model_registry = json.load(f)
+                logger.debug(f"Model registry content: {model_registry}")
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Error loading model registry: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to load model registry: {e}")
+            raise
 
-    def get_validation_data(self):
-        logging.info('getting validation data')
-        time.sleep(1)
-        logging.info('got validation data')
-        return
+        if version == 'latest':
+            version = model_registry.get('latest', None)
+            if version is None:
+                logger.warning("No 'latest' version found in the model registry. Initializing model with random weights.")
+                return
+
+        # Get the checkpoint path for the requested version
+        checkpoint_path = model_registry.get(version, {}).get('checkpoint_path', None)
+        
+        if checkpoint_path is None or not os.path.isfile(checkpoint_path):
+            logger.warning(f"Checkpoint file not found for version {version}. Initializing model with random weights.")
+            return
+        
+        # Load the checkpoint
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            
+            # Load the state dictionary
+            if 'model_state_dict' in checkpoint:
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                self.model.load_state_dict(checkpoint)  # Assuming the checkpoint is the state dict itself
+
+            logger.info(f"Successfully loaded model version: {version}")
+        except Exception as e:
+            logger.error(f"Error loading checkpoint for version {version}: {e}")
+            logger.warning("Initializing model with random weights.")
+
 
     def continue_training(self, data, context):
         logging.info('starting continuous training')
@@ -296,20 +321,51 @@ class SequenceAnomalyDetector(BaseHandler):
         logging.info('getting the latest checkpoint from the checkpoints folder')
         return
 
-    def evaluate_model(self, validation_data):
-        logging.info('evaluating model on validation set')
+    def update_model_registry(self, model_file_name, average_loss):
+        registry_path = '/home/model-server/model-registry/model_registry.json'
+        
+        # Load the current registry
+        with open(registry_path, 'r') as f:
+            model_registry = json.load(f)
+        
+        # Create a new version entry
+        new_version = f"v{len(model_registry)}"
+        model_registry[new_version] = {
+            "checkpoint_path": os.path.join(self.model_store_path, model_file_name),
+            "performance_metrics": {
+                "validation_loss": average_loss
+            },
+            "creation_date": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+        }
+        
+        # Update the latest version
+        model_registry['latest'] = new_version
+        
+        # Save the updated registry
+        with open(registry_path, 'w') as f:
+            json.dump(model_registry, f, indent=4)
+        
+        logger.info(f"Model registry updated with new version: {new_version}")
+
+    
+    ####################
+    # TO BE ADDED LATER
+    ####################
+
+    def get_validation_data(self):
+        logging.info('getting validation data')
         time.sleep(1)
-        logging.info('evaluated model on validation set')
-        return 0.2
+        logging.info('got validation data')
+        return
     
     def rollback_to_best_checkpoint(self):
         logging.info('rolling back to best checkpoint')
         time.sleep(1)
         logging.info('rolled back to best checkpoint')
         return
-    
-    def update_model_registry(self, checkpoint_path, performance_metrics):
-        logging.info(f'updating model registry to include {checkpoint_path} with metrics:{performance_metrics}')
+
+    def evaluate_model(self, validation_data):
+        logging.info('evaluating model on validation set')
         time.sleep(1)
-        logging.info(f'updated model registry with {checkpoint_path}')
-        return
+        logging.info('evaluated model on validation set')
+        return 0.2
