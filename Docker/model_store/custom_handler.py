@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 from ts.torch_handler.base_handler import BaseHandler
+from torch.optim.lr_scheduler import ExponentialLR
 from transformer_autoencoder import TransformerAutoencoder
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -134,7 +135,7 @@ class SequenceAnomalyDetector(BaseHandler):
             anomaly_results.append({
                 "sequence_id": i,
                 "reconstruction_error": float(anomaly_score),
-                "is_anomaly": float(anomaly_score) >= float(os.getenv('ANOMALY_THRESHOLD', 1))
+                "is_anomaly": bool(float(anomaly_score) >= float(self.anomaly_threshold))
             })
 
         logger.info(f"Postprocessing completed. Processed {len(anomaly_results)} sequences")
@@ -186,21 +187,26 @@ class SequenceAnomalyDetector(BaseHandler):
         return threshold
 
     def train(self, data, context):
-        logger.info("Starting model training")
+        logger.info("Starting model training/fine-tuning")
 
         num_epochs = int(os.getenv('NUM_EPOCHS', 10))
         early_stopping_threshold = float(os.getenv('EARLY_STOPPING_THRESHOLD', 0.01))
         
+        # Load the latest checkpoint if it exists
         latest_checkpoint = self.get_latest_checkpoint()
         if latest_checkpoint:
+            logger.info("Loading latest checkpoint for fine-tuning")
             self.load_checkpoint(latest_checkpoint)
+        else:
+            logger.info("No checkpoint found. Starting initial training.")
 
         self.model.train()
         optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
+        
+        # Implement a simple learning rate scheduler
+        scheduler = ExponentialLR(optimizer, gamma=0.95)
         
         dataloader = self.preprocess(data)
-        validation_dataloader = self.get_validation_data()
 
         for epoch in range(1, num_epochs + 1):
             logger.info(f"Epoch {epoch} started")
@@ -213,10 +219,6 @@ class SequenceAnomalyDetector(BaseHandler):
                 outputs, _ = self.model(batch)
                 loss = self.model.compute_loss((outputs, None), batch)
 
-                logger.debug(f"Model outputs: {outputs}")
-                logger.debug(f"Batch inputs: {batch}")
-                logger.debug(f"Batch loss: {loss.item()}")
-
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 optimizer.step()
@@ -228,7 +230,9 @@ class SequenceAnomalyDetector(BaseHandler):
 
             average_epoch_loss = epoch_loss / num_batches if num_batches > 0 else 0
             logger.info(f"Epoch {epoch} completed. Average loss: {average_epoch_loss}")
-            scheduler.step(average_epoch_loss)
+            
+            # Apply learning rate scheduler
+            scheduler.step()
 
             # Early stopping check
             if average_epoch_loss < early_stopping_threshold:
@@ -239,12 +243,14 @@ class SequenceAnomalyDetector(BaseHandler):
         self.anomaly_threshold = self.set_threshold(dataloader)
         logger.info(f"Dynamic anomaly threshold set to: {self.anomaly_threshold}")
 
-        # Save the model
-        timestamp = f"{time.time():.2f}".replace('.', '_')
-        model_file_name = f'transformer_autoencoder_{timestamp}.pth'
-        model_save_path = os.path.join(self.model_checkpoints_path, model_file_name)  # Ensure this path is correct
-        torch.save(self.model.state_dict(), self.model_checkpoints_path)
-        logger.info(f"Model saved to {self.model_checkpoints_path}")
+        # Save the model using the save_checkpoint function
+        model_file_name = self.save_checkpoint(
+            epoch=num_epochs,
+            model_state=self.model.state_dict(),
+            optimizer_state=optimizer.state_dict(),
+            loss=average_epoch_loss,
+            metrics={'anomaly_threshold': self.anomaly_threshold}
+        )
 
         # Update the model registry
         self.update_model_registry(model_file_name, average_epoch_loss)
@@ -297,29 +303,37 @@ class SequenceAnomalyDetector(BaseHandler):
             logger.error(f"Error loading checkpoint for version {version}: {e}")
             logger.warning("Initializing model with random weights.")
 
-
-    def continue_training(self, data, context):
-        logging.info('starting continuous training')
-        time.sleep(1)
-        logging.info('completed continuous training')
-        return
-    
     def save_checkpoint(self, epoch, model_state, optimizer_state, loss, metrics):
-        logging.info(f'saving checkpoint on epoch {epoch} due to loss:{loss} and metrics:{metrics}')
-        time.sleep(1)
-        path = f"/home/model-server/checkpoints/checkpoint_{int(time.time())}.pth"
-        logging.info(f'saved checkpoint to {path}')
-        return path
-
-    def load_checkpoint(self, checkpoint_path):
-        logging.info(f'loading checkpoint from {checkpoint_path}')
-        time.sleep(1)
-        logging.info('loaded checkpoint')
-        return
+        timestamp = f"{time.time():.2f}".replace('.', '_')
+        model_file_name = f'transformer_autoencoder_{timestamp}.pth'
+        model_save_path = os.path.join(self.model_checkpoints_path, model_file_name)
+        
+        checkpoint = {
+            'epoch': epoch,
+            'model_state_dict': model_state,
+            'optimizer_state_dict': optimizer_state,
+            'loss': loss,
+            'metrics': metrics
+        }
+        
+        torch.save(checkpoint, model_save_path)
+        logger.info(f"Checkpoint saved to {model_save_path}")
+        return model_file_name
 
     def get_latest_checkpoint(self):
-        logging.info('getting the latest checkpoint from the checkpoints folder')
-        return
+        logger.info('Getting the latest checkpoint from the checkpoints folder')
+        checkpoints = [f for f in os.listdir(self.model_checkpoints_path) if f.endswith('.pth')]
+        if not checkpoints:
+            logger.info('No checkpoints found')
+            return None
+        latest_checkpoint = max(checkpoints, key=lambda x: os.path.getctime(os.path.join(self.model_checkpoints_path, x)))
+        return os.path.join(self.model_checkpoints_path, latest_checkpoint)
+
+    def load_checkpoint(self, checkpoint_path):
+        logger.info(f'Loading checkpoint from {checkpoint_path}')
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        logger.info('Checkpoint loaded successfully')
 
     def update_model_registry(self, model_file_name, average_loss):
         registry_path = '/home/model-server/model-registry/model_registry.json'
@@ -331,9 +345,9 @@ class SequenceAnomalyDetector(BaseHandler):
         # Create a new version entry
         new_version = f"v{len(model_registry)}"
         model_registry[new_version] = {
-            "checkpoint_path": os.path.join(self.model_store_path, model_file_name),
+            "checkpoint_path": os.path.join(self.model_checkpoints_path, model_file_name),
             "performance_metrics": {
-                "validation_loss": average_loss
+                "training_loss": average_loss
             },
             "creation_date": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
         }

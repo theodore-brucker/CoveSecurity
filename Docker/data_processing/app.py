@@ -80,24 +80,26 @@ class ProducerManager:
 
 class ConsumerManager:
     def __init__(self, config):
-        self.consumers = {}
         self.lock = threading.Lock()
         self.consumer_config = config  # Store the base config
 
     def get_consumer(self, topic, group_id, config=None):
         with self.lock:
-            key = f"{topic}-{group_id}"
-            if key not in self.consumers:
-                config = config or self.consumer_config.copy()
-                config['group.id'] = group_id
-                try:
-                    self.consumers[key] = Consumer(config)
-                    self.consumers[key].subscribe([topic])
-                    logging.info(f"Successfully created consumer for topic: {topic}, group: {group_id}")
-                except KafkaException as e:
-                    logging.error(f"Failed to create consumer for topic {topic}, group {group_id}: {e}")
-                    raise
-            return self.consumers[key]
+            config = config or self.consumer_config.copy()
+            config['group.id'] = group_id
+            try:
+                consumer = Consumer(config)
+                consumer.subscribe([topic])
+                logging.info(f"Successfully created consumer for topic: {topic}, group: {group_id}")
+                return consumer
+            except KafkaException as e:
+                logging.error(f"Failed to create consumer for topic {topic}, group {group_id}: {e}")
+                raise
+
+    def close_consumer(self, consumer):
+        if consumer:
+            consumer.close()
+            logging.info("Consumer closed successfully")
 
 producer_manager = ProducerManager()
 
@@ -691,7 +693,7 @@ def fetch_training_data():
     logging.info("Fetching all unread data from training topic")
     consumer_config = consumer_manager.consumer_config.copy()
     consumer_config['auto.offset.reset'] = 'earliest'
-    consumer = consumer_manager.get_consumer(TRAINING_TOPIC, 'training_group', config=consumer_config)
+    consumer = consumer_manager.get_consumer(TRAINING_TOPIC, f'training_group_{int(time.time())}', config=consumer_config)
 
     data = []
     max_empty_polls = 5
@@ -699,7 +701,7 @@ def fetch_training_data():
 
     try:
         while empty_poll_count < max_empty_polls:
-            msg = consumer.poll(1.0)  # Increased timeout to 1 second
+            msg = consumer.poll(1.0)
             if msg is None:
                 empty_poll_count += 1
                 logging.info(f"Empty poll {empty_poll_count}/{max_empty_polls}")
@@ -719,7 +721,7 @@ def fetch_training_data():
                 logging.error(f"Unexpected error processing message fetching training data: {e}")
 
     finally:
-        consumer.close()
+        consumer_manager.close_consumer(consumer)
     
     logging.info(f"Fetched data of size {len(data)} from {TRAINING_TOPIC}")
     return data

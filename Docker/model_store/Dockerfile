@@ -18,7 +18,6 @@ COPY model_registry.json /home/model-server/model-registry/
 COPY /config/ /home/model-server/
 
 RUN mkdir -p /home/model-server/checkpoints/
-COPY transformer_autoencoder_1724018419_49.pth /home/model-server/checkpoints/transformer_autoencoder_1724018419_49.pth
 
 # Install any needed packages specified in requirements.txt
 COPY requirements.txt /home/model-server/
