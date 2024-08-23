@@ -171,19 +171,22 @@ class SequenceAnomalyDetector(BaseHandler):
             logger.error(f"Error handling request: {str(e)}", exc_info=True)
             return [json.dumps({"status": "error", "message": str(e)})]
 
-    def set_threshold(self, train_dataloader, percentile=90):
+    def set_threshold(self, val_dataloader, target_normal_percentage=0.9):
         self.model.eval()
         reconstruction_errors = []
 
         with torch.no_grad():
-            for inputs in train_dataloader:
+            for inputs in val_dataloader:
                 inputs = inputs[0].to(self.device)
                 outputs, _ = self.model(inputs)
                 recon_error = self.model.compute_batch_error((outputs, None), inputs)
                 reconstruction_errors.extend(recon_error.cpu().numpy())
 
-        threshold = np.percentile(reconstruction_errors, percentile)
-        logger.info(f"Threshold set at the {percentile}th percentile: {threshold}")
+        sorted_errors = sorted(reconstruction_errors)
+        threshold_index = int(len(sorted_errors) * target_normal_percentage)
+        threshold = sorted_errors[threshold_index]
+        
+        logger.info(f"Threshold set to achieve {target_normal_percentage*100}% normal classification: {threshold}")
         return threshold
 
     def train(self, data, context):
@@ -201,27 +204,38 @@ class SequenceAnomalyDetector(BaseHandler):
             logger.info("No checkpoint found. Starting initial training.")
 
         self.model.train()
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001, weight_decay=0.001)
         
         # Implement a simple learning rate scheduler
-        scheduler = ExponentialLR(optimizer, gamma=0.95)
+        scheduler = ExponentialLR(self.optimizer, gamma=0.95)
         
         dataloader = self.preprocess(data)
 
+        # Split data into training and validation sets
+        train_size = int(0.8 * len(dataloader.dataset))
+        val_size = len(dataloader.dataset) - train_size
+        train_dataset, val_dataset = torch.utils.data.random_split(dataloader.dataset, [train_size, val_size])
+        train_dataloader = DataLoader(train_dataset, batch_size=dataloader.batch_size, shuffle=True)
+        val_dataloader = DataLoader(val_dataset, batch_size=dataloader.batch_size, shuffle=False)
+        
+        best_val_loss = float('inf')
+        patience = 5
+        patience_counter = 0
+        
         for epoch in range(1, num_epochs + 1):
             logger.info(f"Epoch {epoch} started")
             epoch_loss = 0
             num_batches = 0
 
-            for batch in dataloader:
+            for batch in train_dataloader:
                 batch = batch[0].to(self.device)
-                optimizer.zero_grad()
+                self.optimizer.zero_grad()
                 outputs, _ = self.model(batch)
                 loss = self.model.compute_loss((outputs, None), batch)
 
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                optimizer.step()
+                self.optimizer.step()
                 
                 epoch_loss += loss.item()
                 num_batches += 1
@@ -234,28 +248,47 @@ class SequenceAnomalyDetector(BaseHandler):
             # Apply learning rate scheduler
             scheduler.step()
 
-            # Early stopping check
-            if average_epoch_loss < early_stopping_threshold:
-                logger.info(f"Early stopping triggered at epoch {epoch} with average loss {average_epoch_loss}")
+            # Validation loop
+            val_loss = self.validate(val_dataloader)
+            logger.info(f"Epoch {epoch} validation loss: {val_loss}")
+            
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0
+                self.save_best_model(epoch, val_loss)
+            else:
+                patience_counter += 1
+            
+            if patience_counter >= patience:
+                logger.info(f"Early stopping triggered at epoch {epoch}")
                 break
 
-        # After training, set a dynamic threshold based on the training data
-        self.anomaly_threshold = self.set_threshold(dataloader)
+        # After training, set a dynamic threshold based on the validation data
+        self.anomaly_threshold = self.set_threshold(val_dataloader)
         logger.info(f"Dynamic anomaly threshold set to: {self.anomaly_threshold}")
 
-        # Save the model using the save_checkpoint function
+        return [json.dumps({"status": "success", "average_loss": average_epoch_loss, "best_val_loss": best_val_loss})]
+
+    def validate(self, val_dataloader):
+        self.model.eval()
+        total_loss = 0
+        with torch.no_grad():
+            for batch in val_dataloader:
+                batch = batch[0].to(self.device)
+                outputs, _ = self.model(batch)
+                loss = self.model.compute_loss((outputs, None), batch)
+                total_loss += loss.item()
+        return total_loss / len(val_dataloader)
+
+    def save_best_model(self, epoch, val_loss):
         model_file_name = self.save_checkpoint(
-            epoch=num_epochs,
+            epoch=epoch,
             model_state=self.model.state_dict(),
-            optimizer_state=optimizer.state_dict(),
-            loss=average_epoch_loss,
-            metrics={'anomaly_threshold': self.anomaly_threshold}
+            optimizer_state=self.optimizer.state_dict(),
+            loss=val_loss,
+            metrics={'best_val_loss': val_loss}
         )
-
-        # Update the model registry
-        self.update_model_registry(model_file_name, average_epoch_loss)
-
-        return [json.dumps({"status": "success", "average_loss": average_epoch_loss, "model_file": model_file_name})]
+        self.update_model_registry(model_file_name, val_loss, is_best=True)
 
     def load_model_version(self, version):
         logger.info(f"Loading model version: {version}")
@@ -335,51 +368,39 @@ class SequenceAnomalyDetector(BaseHandler):
         self.model.load_state_dict(checkpoint['model_state_dict'])
         logger.info('Checkpoint loaded successfully')
 
-    def update_model_registry(self, model_file_name, average_loss):
+    def update_model_registry(self, model_file_name, val_loss, is_best=False):
         registry_path = '/home/model-server/model-registry/model_registry.json'
         
-        # Load the current registry
         with open(registry_path, 'r') as f:
             model_registry = json.load(f)
         
-        # Create a new version entry
         new_version = f"v{len(model_registry)}"
         model_registry[new_version] = {
             "checkpoint_path": os.path.join(self.model_checkpoints_path, model_file_name),
             "performance_metrics": {
-                "training_loss": average_loss
+                "validation_loss": val_loss
             },
             "creation_date": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
         }
         
-        # Update the latest version
+        if is_best:
+            model_registry['best'] = new_version
+        
         model_registry['latest'] = new_version
         
-        # Save the updated registry
         with open(registry_path, 'w') as f:
             json.dump(model_registry, f, indent=4)
         
         logger.info(f"Model registry updated with new version: {new_version}")
 
-    
-    ####################
-    # TO BE ADDED LATER
-    ####################
-
-    def get_validation_data(self):
-        logging.info('getting validation data')
-        time.sleep(1)
-        logging.info('got validation data')
-        return
-    
-    def rollback_to_best_checkpoint(self):
-        logging.info('rolling back to best checkpoint')
-        time.sleep(1)
-        logging.info('rolled back to best checkpoint')
-        return
-
-    def evaluate_model(self, validation_data):
-        logging.info('evaluating model on validation set')
-        time.sleep(1)
-        logging.info('evaluated model on validation set')
-        return 0.2
+    def load_best_model(self):
+        registry_path = '/home/model-server/model-registry/model_registry.json'
+        with open(registry_path, 'r') as f:
+            model_registry = json.load(f)
+        
+        best_version = model_registry.get('best', None)
+        if best_version:
+            self.load_model_version(best_version)
+        else:
+            logger.warning("No best model found. Loading latest version.")
+            self.load_model_version('latest')
