@@ -10,7 +10,7 @@ from scapy.all import IP, TCP, UDP, sniff, rdpcap
 import netifaces
 from sklearn.preprocessing import RobustScaler
 from utils import CustomEncoder
-from training_utils import update_training_status
+from status_utils import update_training_status
 from kafka_utils import initialize_kafka_managers
 from processing_utils import process_packet
 
@@ -71,6 +71,9 @@ class PacketSequenceBuffer:
         if self.current_index == self.sequence_length:
             # Calculate average inter-packet time
             inter_packet_times = np.diff(self.timestamp_buffer)
+            
+            # Convert numpy.int64 to float64 before calculating mean
+            inter_packet_times = inter_packet_times.astype(np.float64)
             avg_inter_packet_time = np.mean(inter_packet_times)
             
             # Normalize the average inter-packet time (example normalization, adjust as needed)
@@ -94,7 +97,7 @@ class PacketSequenceBuffer:
 
             human_readable_sequence = self.human_readable_buffer.copy()
             for hr in human_readable_sequence:
-                hr['avg_inter_packet_time'] = avg_inter_packet_time
+                hr['avg_inter_packet_time'] = float(avg_inter_packet_time)  # Convert to float
 
             self.current_index = 0
             self.human_readable_buffer.clear()
@@ -222,36 +225,44 @@ def capture_live_traffic(interface):
     except Exception as e:
         logging.error(f"[TrafficCaptureThread] Error capturing live traffic: {str(e)}", exc_info=True)
 
+def numpy_to_python(obj):
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
+
 def produce_raw_data(feature_sequences, human_readable_sequences, is_training=False):
     producer = producer_manager.get_producer(RAW_TOPIC)
     logging.debug(f'Attempting to produce {len(feature_sequences)} raw sequences')
     valid_sequences = 0
     
-    for feature_sequence, human_readable_sequence in zip(feature_sequences, human_readable_sequences):
-        logging.debug(f"Processing sequence. Type: {type(feature_sequence)}, Length: {len(feature_sequence) if isinstance(feature_sequence, (list, np.ndarray)) else 'N/A'}")
+    for idx, (feature_sequence, human_readable_sequence) in enumerate(zip(feature_sequences, human_readable_sequences)):
+        logging.debug(f"Processing sequence {idx}. Type: {type(feature_sequence)}, Length: {len(feature_sequence) if isinstance(feature_sequence, (list, np.ndarray)) else 'N/A'}")
         
-        # Ensure feature_sequence is a list
-        if not isinstance(feature_sequence, (list, np.ndarray)):
-            logging.warning(f"feature_sequence is not a list or numpy array. Type: {type(feature_sequence)}. Skipping.")
-            continue
+        # Ensure feature_sequence is a list of Python native types
+        feature_sequence = [numpy_to_python(packet) for packet in feature_sequence]
         
-        # Convert numpy array to list if necessary
-        if isinstance(feature_sequence, np.ndarray):
-            feature_sequence = feature_sequence.tolist()
+        # Convert human_readable_sequence to Python native types
+        human_readable_sequence = [
+            {k: numpy_to_python(v) for k, v in packet.items()}
+            for packet in human_readable_sequence
+        ]
         
-        # Check sequence length
         if len(feature_sequence) != SEQUENCE_LENGTH:
-            logging.warning(f"Skipping sequence of length {len(feature_sequence)}. Expected {SEQUENCE_LENGTH}")
+            logging.warning(f"Skipping sequence {idx} of length {len(feature_sequence)}. Expected {SEQUENCE_LENGTH}")
             continue
         
         # Check packet structure
-        if not all(isinstance(packet, (list, np.ndarray)) and len(packet) == FEATURE_COUNT for packet in feature_sequence):
-            logging.warning(f"Invalid packet structure in sequence. Expected {SEQUENCE_LENGTH} packets, each with {FEATURE_COUNT} features.")
+        if not all(isinstance(packet, list) and len(packet) == FEATURE_COUNT for packet in feature_sequence):
+            logging.warning(f"Invalid packet structure in sequence {idx}. Expected {SEQUENCE_LENGTH} packets, each with {FEATURE_COUNT} features.")
             continue
         
         # Check human_readable_sequence length
         if len(human_readable_sequence) != SEQUENCE_LENGTH:
-            logging.warning(f"Human readable sequence length mismatch. Expected {SEQUENCE_LENGTH}, got {len(human_readable_sequence)}")
+            logging.warning(f"Human readable sequence length mismatch in sequence {idx}. Expected {SEQUENCE_LENGTH}, got {len(human_readable_sequence)}")
             continue
         
         try:
@@ -263,7 +274,10 @@ def produce_raw_data(feature_sequences, human_readable_sequences, is_training=Fa
                 "human_readable": human_readable_sequence
             }
             
+            logging.debug(f"Serializing sequence {idx}")
             json_data = json.dumps(serialized_sequence, cls=CustomEncoder)
+            logging.debug(f"Successfully serialized sequence {idx}")
+            
             producer.produce(
                 RAW_TOPIC,
                 key=serialized_sequence['id'],
@@ -271,13 +285,12 @@ def produce_raw_data(feature_sequences, human_readable_sequences, is_training=Fa
             )
             producer.poll(0)
             valid_sequences += 1
-            logging.debug(f"Produced sequence with ID {serialized_sequence['id']}")
         except Exception as e:
-            logging.error(f"Error producing sequence: {e}", exc_info=True)
+            logging.error(f"Error producing sequence {idx}: {e}", exc_info=True)
     
     try:
         producer.flush()
-        logging.info(f'Finished producing {valid_sequences} out of {len(feature_sequences)} sequences.')
+        logging.debug(f'Finished producing {valid_sequences} out of {len(feature_sequences)} sequences.')
     except Exception as e:
         logging.error(f"Error flushing producer: {e}", exc_info=True)
 
@@ -288,26 +301,36 @@ def read_pcap(file_path, is_training=True):
     update_training_status("Training data upload", 0, "Initiated file upload")
     logging.info(f"Processing uploaded PCAP file: {file_path}")
     try:
-        update_training_status("Training data upload", 50, "Reading from file")
+        update_training_status("Training data upload", 10, "Reading from file")
         packets = rdpcap(file_path)
-        update_training_status("Training data upload", 75, "Successfully read from file")
+        update_training_status("Training data upload", 20, "Successfully read from file")
         logging.info(f"Successfully unpacked {len(packets)} packets from training file")
 
         sequence_buffer = PacketSequenceBuffer()
         feature_sequences = []
         human_readable_sequences = []
-
-        for packet in packets:
+        update_training_status("Training data upload", 30, "Processing data")
+        for i, packet in enumerate(packets):
             features, human_readable, timestamp = process_packet(packet)
             if features is not None:
+                logging.debug(f"Processing packet {i}: features={features}, timestamp={timestamp}")
                 feature_sequence, human_readable_sequence = sequence_buffer.add_packet(features, human_readable, timestamp)
                 if feature_sequence is not None:
                     feature_sequences.append(feature_sequence)
                     human_readable_sequences.append(human_readable_sequence)
+        update_training_status("Training data upload", 50, "Successfully processed data")
 
+        logging.info(f"Processed {len(feature_sequences)} sequences")
+        if feature_sequences:
+            logging.debug(f"Sample feature sequence: {feature_sequences[0][:5]}...")  # Show first 5 elements
+            logging.debug(f"Sample human readable sequence: {human_readable_sequences[0][0]}")  # Show first packet in sequence
+
+        update_training_status("Training data upload", 60, "Producing data")
         if feature_sequences:
             produce_raw_data(feature_sequences, human_readable_sequences, is_training)
-
+        update_training_status("Training data upload", 80, "Successfully produced data")
+        
         update_training_status("Training data upload", 100, "Successfully uploaded training data")
     except Exception as e:
-        logging.error(f"Error processing uploaded PCAP: {e}")
+        update_training_status("Training data upload", 0, "Failed to upload training data")
+        logging.error(f"Error processing uploaded PCAP: {e}", exc_info=True)

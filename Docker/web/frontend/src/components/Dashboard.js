@@ -4,7 +4,6 @@ import ResizableCard from './ResizableCard';
 import DataTable from './DataTable';
 import logo from './Expanded-Cove-Logo.jpg';
 
-
 const Dashboard = () => {
   // State variables
   const [rawSample, setRawSample] = useState(null);
@@ -36,6 +35,8 @@ const Dashboard = () => {
   
   const anomalousSequencesRef = useRef([]);
 
+  const [activeTab, setActiveTab] = useState('time');
+
   // Utility functions
   const getStatusClass = (status) => {
     if (status === 'healthy') return 'status-healthy';
@@ -53,17 +54,27 @@ const Dashboard = () => {
     setFile(e.target.files[0]);
   };
 
-  const handleTrainingData = async () => {
+  const handleTrainingData = async (type) => {
     setTrainingStatus({ status: 'starting', progress: 0, message: 'Submitting training data...' });
     const formData = new FormData();
 
-    if (file) {
-      formData.append('file', file);
-    } else if (startDate && endDate) {
-      formData.append('startDate', new Date(startDate).getTime());
-      formData.append('endDate', new Date(endDate).getTime());
+    if (type === 'pcap') {
+      if (file) {
+        formData.append('file', file);
+      } else {
+        setTrainingStatus({ status: 'error', progress: 0, message: 'Please provide a PCAP file' });
+        return;
+      }
+    } else if (type === 'time') {
+      if (startDate && endDate) {
+        formData.append('startDate', new Date(startDate).getTime());
+        formData.append('endDate', new Date(endDate).getTime());
+      } else {
+        setTrainingStatus({ status: 'error', progress: 0, message: 'Please provide start and end dates' });
+        return;
+      }
     } else {
-      setTrainingStatus({ status: 'error', progress: 0, message: 'Please provide either a PCAP file or start and end dates' });
+      setTrainingStatus({ status: 'error', progress: 0, message: 'Invalid training data type' });
       return;
     }
 
@@ -75,7 +86,7 @@ const Dashboard = () => {
 
       if (response.ok) {
         const result = await response.json();
-        setTrainingStatus({ status: 'ready', progress: 100, message: 'Training data submitted successfully.' });
+        setTrainingStatus({ status: 'submitted', progress: 0, message: 'Training data submitted successfully. Waiting for processing to begin.' });
       } else {
         const errorText = await response.text();
         setTrainingStatus({ status: 'error', progress: 0, message: `Error: ${errorText}` });
@@ -192,7 +203,10 @@ const Dashboard = () => {
     newSocket.on("raw_sample_update", setRawSample);
     newSocket.on("processed_sample_update", setProcessedSample);
     newSocket.on("anomaly_numbers_update", setAnomalyNumbers);
-    newSocket.on("training_status_update", setTrainingStatus);
+    newSocket.on("training_status_update", (status) => {
+      console.log("Received training status update:", status);
+      setTrainingStatus(status);
+    });
     newSocket.on("anomalous_sequences_update", handleAnomalousSequencesUpdate);
 
     handleRefreshAnomalousSequences();
@@ -227,8 +241,8 @@ const Dashboard = () => {
         {anomalyNumbers ? (
           <div>
             <p><span className="data-label">Total Predictions:</span> {anomalyNumbers.total}</p>
-            <p><span className="data-label">Normal Entries:</span> {anomalyNumbers.normal}</p>
-            <p><span className="data-label">Anomalous Entries:</span> {anomalyNumbers.anomalous}</p>
+            <p><span className="data-label">Normal Sequences:</span> {anomalyNumbers.normal}</p>
+            <p><span className="data-label">Anomalous Sequences:</span> {anomalyNumbers.anomalous}</p>
           </div>
         ) : (
           <p className="loading">Loading anomaly data...</p>
@@ -286,34 +300,52 @@ const Dashboard = () => {
   const renderTrainModelCard = () => (
     <div key="trainModel" className="dashboard-item">
       <ResizableCard title="Model Training">
-        <div className="date-selection">
-          <label>
-            Start Date:
-            <input type="datetime-local" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
-          </label>
-          <label>
-            End Date:
-            <input type="datetime-local" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
-          </label>
+        <div className="training-tabs">
+          <button className={`tab-button ${activeTab === 'time' ? 'active' : ''}`} onClick={() => setActiveTab('time')}>Time Window</button>
+          <button className={`tab-button ${activeTab === 'pcap' ? 'active' : ''}`} onClick={() => setActiveTab('pcap')}>PCAP File</button>
         </div>
-        <div className="button-container">
-          <label className="themed_button">
-            Upload PCAP file:
-            <input type="file" accept=".pcap" onChange={handleFileChange} />
-          </label>
-          <button className="themed_button" onClick={handleTrainingData}>Submit Training Data</button>
+        
+        <div className="tab-content">
+          {activeTab === 'time' && (
+            <div className="time-window-section">
+              <div className="date-selection">
+                <label>
+                  Start Date:
+                  <input type="datetime-local" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+                </label>
+                <label>
+                  End Date:
+                  <input type="datetime-local" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+                </label>
+              </div>
+              <button className="themed_button" onClick={() => handleTrainingData('time')}>Submit Time Window</button>
+            </div>
+          )}
+          
+          {activeTab === 'pcap' && (
+            <div className="pcap-upload-section">
+              <div className="themed_file_input">
+                <label>
+                  Upload PCAP file
+                  <input type="file" accept=".pcap" onChange={handleFileChange} />
+                </label>
+              </div>
+              {file && <span className="file-name">{file.name}</span>}
+              <button className="themed_button" onClick={() => handleTrainingData('pcap')} disabled={!file}>Submit PCAP File</button>
+            </div>
+          )}
         </div>
+        
+        <button className="start-training-button" onClick={handleStartTrainingJob}>
+          Start Training Job
+        </button>
+        
         {trainingStatus.status && (
           <TrainingStatusDisplay 
             status={trainingStatus.status} 
             progress={trainingStatus.progress} 
             message={trainingStatus.message} 
           />
-        )}
-        {(trainingStatus.status && trainingStatus.status !== 'starting') && (
-          <button className="themed_button" onClick={handleStartTrainingJob}>
-            Start Training Job
-          </button>
         )}
       </ResizableCard>
     </div>

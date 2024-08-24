@@ -16,7 +16,7 @@ from traffic_capture import (
     capture_live_traffic
 )
 from utils import CustomEncoder
-from training_utils import update_training_status, get_training_status
+from status_utils import update_training_status, get_training_status
 
 APP_PATH = os.getenv('APP_PATH', '/app/')
 KAFKA_BROKER = os.getenv('KAFKA_BROKER', 'kafka:9092')
@@ -332,7 +332,7 @@ def prediction_thread():
                         "is_anomaly": is_anomaly,
                         "human_readable": sequence_human_readable
                     }
-                    logging.info(f'Producing prediction for sequence {sequence_id}: is_anomaly = {is_anomaly}, reconstruction_error = {reconstruction_error}')
+                    logging.debug(f'Producing prediction for sequence {sequence_id}: is_anomaly = {is_anomaly}, reconstruction_error = {reconstruction_error}')
                     producer.produce(PREDICTIONS_TOPIC, key=sequence_id, value=json.dumps(output))                
                 producer.flush()
                 logging.debug(f"Produced prediction for sequence {sequence_id}")

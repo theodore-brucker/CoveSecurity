@@ -46,9 +46,9 @@ def process_packet(packet):
                 human_readable.update({
                     'src_ip': ip.src,
                     'dst_ip': ip.dst,
-                    'length': ip.len,
+                    'length': int(ip.len),  # Convert to int
                     'flags': int(ip.flags),
-                    'ttl': ip.ttl,
+                    'ttl': int(ip.ttl),  # Convert to int
                     'protocol': protocol_map.get(ip.proto, "Unknown")
                 })
             except Exception as e:
@@ -64,10 +64,10 @@ def process_packet(packet):
                     features[9] = (np.log1p(float(tcp.window)) / np.log1p(65535)) * 2 - 1
                     features[10] = -1  # Placeholder for consistency
                     human_readable.update({
-                        'src_port': tcp.sport,
-                        'dst_port': tcp.dport,
+                        'src_port': int(tcp.sport),  # Convert to int
+                        'dst_port': int(tcp.dport),  # Convert to int
                         'tcp_flags': int(tcp.flags),
-                        'window': tcp.window
+                        'window': int(tcp.window)  # Convert to int
                     })
                 except Exception as e:
                     logging.error(f"Error processing TCP packet fields: {e}")
@@ -81,9 +81,9 @@ def process_packet(packet):
                     features[9] = -1  # Placeholder for consistency
                     features[10] = -1  # Placeholder for consistency
                     human_readable.update({
-                        'src_port': udp.sport,
-                        'dst_port': udp.dport,
-                        'udp_len': udp.len
+                        'src_port': int(udp.sport),  # Convert to int
+                        'dst_port': int(udp.dport),  # Convert to int
+                        'udp_len': int(udp.len)  # Convert to int
                     })
                 except Exception as e:
                     logging.error(f"Error processing UDP packet fields: {e}")
@@ -98,7 +98,7 @@ def process_packet(packet):
                 })
 
             features[11] = (np.log1p(float(len(packet))) / np.log1p(65535)) * 2 - 1
-            human_readable['packet_size'] = len(packet)
+            human_readable['packet_size'] = int(len(packet))  # Convert to int
 
             return features, human_readable, packet.time
         else:
