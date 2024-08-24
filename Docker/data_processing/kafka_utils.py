@@ -2,7 +2,7 @@ import logging
 import os
 import threading
 from confluent_kafka import Producer, Consumer, KafkaException
-from confluent_kafka.admin import AdminClient
+
 
 KAFKA_BROKER = os.getenv('KAFKA_BROKER', 'kafka:9092')
 
