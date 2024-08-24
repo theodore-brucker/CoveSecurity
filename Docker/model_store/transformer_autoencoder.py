@@ -45,18 +45,18 @@ class TransformerAutoencoder(nn.Module):
 
     def compute_batch_error(self, outputs, target):
         output, _ = outputs
-        loss = F.mse_loss(output, target, reduction='none').mean(dim=(1, 2))
+        loss = F.smooth_l1_loss(output, target, reduction='none').mean(dim=(1, 2))
         logger.debug(f"Batch error shape: {loss.shape}")
         return loss
 
     def compute_anomaly_score(self, x):
         outputs, _ = self.forward(x)
-        reconstruction_error = F.mse_loss(outputs, x, reduction='none').mean(dim=(1, 2))
+        reconstruction_error = F.smooth_l1_loss(outputs, x, reduction='none').mean(dim=(1, 2))
         logger.debug(f"Anomaly score shape: {reconstruction_error.shape}")
         return reconstruction_error, None
 
     def compute_classification_metrics(self, output, inputs, targets):
-        recon_errors = torch.mean((output - inputs) ** 2, dim=[1, 2])  # Mean squared error over the entire sequence
+        recon_errors = F.smooth_l1_loss(output, inputs, reduction='none').mean(dim=(1, 2))
         normal_loss = recon_errors[targets == 0].mean().item() if torch.sum(targets == 0) > 0 else 0.0
         malicious_loss = recon_errors[targets == 1].mean().item() if torch.sum(targets == 1) > 0 else 0.0
         return normal_loss, malicious_loss
