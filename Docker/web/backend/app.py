@@ -169,23 +169,65 @@ def training_data():
                 logging.error('Invalid file type')
                 return jsonify({"error": "Invalid file type"}), 400
     elif 'startDate' in request.form and 'endDate' in request.form:
-        data = {
-            'startDate': request.form['startDate'],
-            'endDate': request.form['endDate']
-        }
-        training_type = 'time_window'
+        try:
+            start_date = int(request.form['startDate'])
+            end_date = int(request.form['endDate'])
+            data = {
+                'startDate': start_date,
+                'endDate': end_date
+            }
+            training_type = 'time_window'
+        except ValueError:
+            return jsonify({"error": "Invalid date format. Expecting Unix timestamps."}), 400
     else:
         return jsonify({"error": "Missing required data"}), 400
 
     try:
         response = requests.post(f'{DATA_PROCESSING_URL}/train_data', json=data)
         if response.status_code == 202:
-            threading.Thread(target=emit_training_status).start()  # Start emitting training status
-            return jsonify({"message": f"Model training initiated with {training_type}"}), 202
+            job_info = response.json()
+            job_id = job_info.get('job_id')
+            threading.Thread(target=emit_job_status, args=(job_id,)).start()
+            return jsonify({
+                "message": f"Data processing initiated with {training_type}",
+                "job_id": job_id
+            }), 202
         else:
-            return jsonify({"error": "Failed to initiate model training"}), 500
+            return jsonify({"error": "Failed to initiate data processing"}), 500
     except requests.RequestException as e:
-        return jsonify({"error": f"Error communicating with model service: {str(e)}"}), 500
+        return jsonify({"error": f"Error communicating with data processing service: {str(e)}"}), 500
+
+def emit_job_status(job_id=None):
+    with app.app_context():
+        while True:
+            try:
+                if job_id:
+                    response = requests.get(f'{DATA_PROCESSING_URL}/status/{job_id}')
+                    event_name = 'job_status_update'
+                else:
+                    response = requests.get(f'{DATA_PROCESSING_URL}/status')
+                    event_name = 'training_status_update'
+                
+                if response.status_code == 200:
+                    status = response.json()
+                    socketio.emit(event_name, status)
+                    if status['status'] in ['completed', 'error']:
+                        break
+                else:
+                    socketio.emit(event_name, {
+                        "status": "error",
+                        "message": "Failed to fetch status",
+                        "job_id": job_id
+                    })
+                    break
+            except requests.RequestException as e:
+                socketio.emit(event_name, {
+                    "status": "error",
+                    "message": f"Error fetching status: {str(e)}",
+                    "job_id": job_id
+                })
+                break
+            socketio.sleep(5)  # Check status every 5 seconds
 
 @app.route('/model_status', methods=['GET'])
 def get_model_status():
@@ -451,25 +493,6 @@ def emit_data_flow_health():
             except Exception as e:
                 logging.error(f"Error in emit_data_flow_health: {e}")
             socketio.sleep(5)
-
-def emit_training_status():
-    with app.app_context():
-        while True:
-            try:
-                response = requests.get(f'{DATA_PROCESSING_URL}/status')
-                if response.status_code == 200:
-                    status = response.json()
-                    socketio.emit('training_status_update', status)
-                    if status['status'] in ['completed', 'error']:
-                        break
-                else:
-                    socketio.emit('training_status_update', {"status": "error", "message": "Failed to fetch status"})
-                    break
-            except requests.RequestException as e:
-                socketio.emit('training_status_update', {"status": "error", "message": f"Error fetching status: {str(e)}"})
-                break
-            socketio.sleep(1)
-
 
 ##########################################
 # MAIN
