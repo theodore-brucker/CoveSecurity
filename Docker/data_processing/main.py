@@ -7,14 +7,14 @@ import logging
 from decimal import Decimal
 from scapy.fields import EDecimal
 from scapy.all import IP, TCP, UDP, ICMP, sniff, rdpcap
-from confluent_kafka import Producer, Consumer, KafkaException
-from confluent_kafka.admin import AdminClient
+from confluent_kafka import KafkaException
 import threading
 import time
 from flask import Flask, jsonify, request
 import numpy as np
 from sklearn.preprocessing import RobustScaler
 import ipaddress
+from kafka_utils import initialize_kafka_managers
 
 import netifaces
 
@@ -39,6 +39,7 @@ protocol_map = {1: "ICMP", 6: "TCP", 17: "UDP", 2: "IGMP"}
 is_training_period = False
 training_end_time = None
 thread_local = threading.local()
+producer_manager, consumer_manager = initialize_kafka_managers(KAFKA_BROKER)
 
 def get_thread_name():
     if not hasattr(thread_local, 'thread_name'):
@@ -55,78 +56,6 @@ logging.info(f"Configured Kafka broker URL: {KAFKA_BROKER}")
 logging.info(f"Configured TorchServe requests URL: {TORCHSERVE_REQUESTS_URL}")
 logging.info(f"Configured TorchServe management URL: {TORCHSERVE_MANAGEMENT_URL}")
 logging.info(f"Configured capture interface: {CAPTURE_INTERFACE}")
-
-##################################################
-# KAFKA MANAGERS AND UTILITY
-##################################################
-
-class ProducerManager:
-    def __init__(self):
-        self.producers = {}
-        self.lock = threading.Lock()
-
-    def get_producer(self, topic):
-        with self.lock:
-            if topic not in self.producers:
-                config = producer_config.copy()
-                config['client.id'] = f'producer-{topic}'
-                try:
-                    self.producers[topic] = Producer(config)
-                    logging.info(f"Successfully created producer for topic: {topic}")
-                except KafkaException as e:
-                    logging.error(f"Failed to create producer for topic {topic}: {e}")
-                    raise
-            return self.producers[topic]
-
-class ConsumerManager:
-    def __init__(self, config):
-        self.lock = threading.Lock()
-        self.consumer_config = config  # Store the base config
-
-    def get_consumer(self, topic, group_id, config=None):
-        with self.lock:
-            config = config or self.consumer_config.copy()
-            config['group.id'] = group_id
-            try:
-                consumer = Consumer(config)
-                consumer.subscribe([topic])
-                logging.info(f"Successfully created consumer for topic: {topic}, group: {group_id}")
-                return consumer
-            except KafkaException as e:
-                logging.error(f"Failed to create consumer for topic {topic}, group {group_id}: {e}")
-                raise
-
-    def close_consumer(self, consumer):
-        if consumer:
-            consumer.close()
-            logging.info("Consumer closed successfully")
-
-producer_manager = ProducerManager()
-
-producer_config = {
-    'bootstrap.servers': KAFKA_BROKER,
-    'client.dns.lookup': 'use_all_dns_ips',
-    'broker.address.family': 'v4'
-}
-
-consumer_config = {
-    'bootstrap.servers': KAFKA_BROKER,
-    'auto.offset.reset': 'earliest',
-    'client.dns.lookup': 'use_all_dns_ips',
-    'broker.address.family': 'v4'
-}
-
-consumer_manager = ConsumerManager(consumer_config)
-
-# Uses AdminClient to verify the existence of a topic
-def topic_exists(broker_address, topic_name):
-    try:
-        admin_client = AdminClient({'bootstrap.servers': broker_address})
-        metadata = admin_client.list_topics(timeout=10)
-        return topic_name in metadata.topics
-    except Exception as e:
-        logging.error(f"Error checking topic existence: {e}")
-        return False
 
 
 ##################################################
@@ -666,9 +595,9 @@ def check_torchserve_availability():
 
 def fetch_training_data():
     logging.info("Fetching all unread data from training topic")
-    consumer_config = consumer_manager.consumer_config.copy()
-    consumer_config['auto.offset.reset'] = 'earliest'
-    consumer = consumer_manager.get_consumer(TRAINING_TOPIC, f'training_group_{int(time.time())}', config=consumer_config)
+    consumer_manager.consumer_config = consumer_manager.consumer_manager.consumer_config.copy()
+    consumer_manager.consumer_config['auto.offset.reset'] = 'earliest'
+    consumer = consumer_manager.get_consumer(TRAINING_TOPIC, f'training_group_{int(time.time())}', config=consumer_manager.consumer_config)
 
     data = []
     max_empty_polls = 5

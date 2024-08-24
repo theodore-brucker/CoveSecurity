@@ -16,20 +16,14 @@ COPY . /app
 
 # Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Install additional Python packages
 RUN pip install netifaces kafka-python
 
-# List the contents of the entire /app directory for debugging
-RUN ls -R /app
-
 RUN echo "Exposing port 5001"
-
 # Make port 5001 available to the world outside this container
 EXPOSE 5001
 
-RUN echo "Running app.py"
+RUN echo "Running main.py"
 
 # Run app.py when the container launches
-CMD ["python", "app.py"]
+CMD ["python", "main.py"]
 
