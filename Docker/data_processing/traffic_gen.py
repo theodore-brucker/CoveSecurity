@@ -44,11 +44,11 @@ def send_malicious_traffic():
 
 def main():
     while True:
-        if random.random() < 1:  # 80% chance of benign traffic
+        if random.random() < 1:  # chance of benign traffic
             send_benign_traffic()
         else:
             send_malicious_traffic()
-        time.sleep(random.uniform(1, 5))  # Wait between 1 and 5 seconds
+        time.sleep(.1)  # Wait between 1 and 2 seconds
 
 if __name__ == "__main__":
     main()

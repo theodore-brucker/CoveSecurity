@@ -13,7 +13,8 @@ import threading
 import time
 from flask import Flask, jsonify, request
 import numpy as np
-from sklearn.preprocessing import MinMaxScaler, RobustScaler
+from sklearn.preprocessing import RobustScaler
+import ipaddress
 
 import netifaces
 
@@ -151,38 +152,25 @@ class CustomEncoder(json.JSONEncoder):
 
 class GlobalScaler:
     def __init__(self, feature_count):
-        self.scalers = [
-            RobustScaler() for _ in range(2)  # IP addresses
-        ] + [
-            MinMaxScaler() for _ in range(3)  # length, flags, frag
-        ] + [
-            MinMaxScaler() for _ in range(2)  # TTL, proto
-        ] + [
-            MinMaxScaler() for _ in range(2)  # src_port, dst_port
-        ] + [
-            RobustScaler() for _ in range(2)  # TCP flags/UDP len, window/padding
-        ] + [
-            RobustScaler() for _ in range(1)  # packet size
-        ]
+        self.scaler = RobustScaler()
         self.feature_count = feature_count
+        self.is_fitted = False
 
     def fit(self, data):
-        for i in range(self.feature_count):
-            self.scalers[i].fit(data[:, i].reshape(-1, 1))
+        self.scaler.fit(data)
+        self.is_fitted = True
 
     def partial_fit(self, data):
-        for i in range(self.feature_count):
-            if hasattr(self.scalers[i], 'partial_fit'):
-                self.scalers[i].partial_fit(data[:, i].reshape(-1, 1))
-            else:
-                # If partial_fit is not available (e.g., for RobustScaler), we'll use fit
-                self.scalers[i].fit(data[:, i].reshape(-1, 1))
+        if not self.is_fitted:
+            self.fit(data)
+        else:
+            # RobustScaler doesn't have partial_fit, so we'll just refit
+            self.scaler.fit(data)
 
     def transform(self, data):
-        return np.column_stack([
-            self.scalers[i].transform(data[:, i].reshape(-1, 1))
-            for i in range(self.feature_count)
-        ])
+        if not self.is_fitted:
+            self.fit(data)
+        return self.scaler.transform(data)
 
 class PacketSequenceBuffer:
     def __init__(self, sequence_length=SEQUENCE_LENGTH, feature_dim=FEATURE_COUNT):
@@ -190,30 +178,51 @@ class PacketSequenceBuffer:
         self.feature_dim = feature_dim
         self.feature_buffer = np.zeros((sequence_length, feature_dim), dtype=np.float32)
         self.human_readable_buffer = []
+        self.timestamp_buffer = []
         self.global_scaler = GlobalScaler(feature_dim)
         self.current_index = 0
-        self.is_fitted = False
 
-    def add_packet(self, packet_features, human_readable):
+    def add_packet(self, packet_features, human_readable, timestamp):
         if len(packet_features) != self.feature_dim:
             logging.warning(f"Packet features length mismatch. Expected {self.feature_dim}, got {len(packet_features)}")
             return None, None
 
         self.feature_buffer[self.current_index] = packet_features
         self.human_readable_buffer.append(human_readable)
+        self.timestamp_buffer.append(timestamp)
         self.current_index += 1
 
         if self.current_index == self.sequence_length:
-            if not self.is_fitted:
-                self.global_scaler.fit(self.feature_buffer)
-                self.is_fitted = True
-            else:
-                self.global_scaler.partial_fit(self.feature_buffer)
+            # Calculate average inter-packet time
+            inter_packet_times = np.diff(self.timestamp_buffer)
+            avg_inter_packet_time = np.mean(inter_packet_times)
             
+            # Normalize the average inter-packet time (example normalization, adjust as needed)
+            normalized_avg_time = (np.log1p(avg_inter_packet_time) / np.log1p(1)) * 2 - 1  # Assuming 1 second as max
+            
+            # Replace the 4th feature (index 3) with the new inter-packet time feature
+            self.feature_buffer[:, 3] = normalized_avg_time
+
             scaled_sequence = self.global_scaler.transform(self.feature_buffer)
+            
+            # Add debugging information here
+            logging.info("Scaled sequence statistics:")
+            for i in range(self.feature_dim):
+                feature_column = scaled_sequence[:, i]
+                logging.info(f"Feature {i}: min={feature_column.min():.4f}, max={feature_column.max():.4f}, "
+                              f"mean={feature_column.mean():.4f}, std={feature_column.std():.4f}")
+            
+            # Additional overall statistics
+            logging.info(f"Overall: min={scaled_sequence.min():.4f}, max={scaled_sequence.max():.4f}, "
+                          f"mean={scaled_sequence.mean():.4f}, std={scaled_sequence.std():.4f}")
+
             human_readable_sequence = self.human_readable_buffer.copy()
+            for hr in human_readable_sequence:
+                hr['avg_inter_packet_time'] = avg_inter_packet_time
+
             self.current_index = 0
             self.human_readable_buffer.clear()
+            self.timestamp_buffer.clear()
             return scaled_sequence.tolist(), human_readable_sequence
         return None, None
 
@@ -316,9 +325,9 @@ def capture_live_traffic(interface):
             try:
                 logging.debug(f"[TrafficCaptureThread] Captured packet type: {type(packet)}")
                 logging.debug(f"[TrafficCaptureThread] Packet summary: {packet.summary()}")
-                features, human_readable = process_packet(packet)
+                features, human_readable, timestamp = process_packet(packet)
                 if features is not None and len(features) == FEATURE_COUNT:
-                    feature_sequence, human_readable_sequence = packet_buffer.add_packet(features, human_readable)
+                    feature_sequence, human_readable_sequence = packet_buffer.add_packet(features, human_readable, timestamp)
                     if feature_sequence is not None:
                         is_training = is_training_period and datetime.now(timezone.utc) <= training_end_time
                         produce_raw_data([feature_sequence], [human_readable_sequence], is_training)
@@ -413,9 +422,9 @@ def read_pcap(file_path, broker_address, is_training=True):
         human_readable_sequences = []
 
         for packet in packets:
-            features, human_readable = process_packet(packet)
+            features, human_readable, timestamp = process_packet(packet)
             if features is not None:
-                feature_sequence, human_readable_sequence = sequence_buffer.add_packet(features, human_readable)
+                feature_sequence, human_readable_sequence = sequence_buffer.add_packet(features, human_readable, timestamp)
                 if feature_sequence is not None:
                     feature_sequences.append(feature_sequence)
                     human_readable_sequences.append(human_readable_sequence)
@@ -513,6 +522,10 @@ def inspect_packet(packet):
         udp = packet[UDP]
         logging.debug(f"UDP fields: {udp.fields}")
 
+def ip_to_normalized_feature(ip_str):
+    ip_int = int(ipaddress.ip_address(ip_str))
+    return (ip_int / (2**32 - 1)) * 2 - 1  # Map to [-1, 1] range
+
 def process_packet(packet):
     features = np.zeros(FEATURE_COUNT, dtype=np.float32)
     human_readable = {}
@@ -523,33 +536,33 @@ def process_packet(packet):
             inspect_packet(packet)  # Log detailed packet info for debugging
             
             try:
-                features[0] = int.from_bytes(bytes(map(int, ip.src.split('.'))), byteorder='big')
-                features[1] = int.from_bytes(bytes(map(int, ip.dst.split('.'))), byteorder='big')
-                features[2] = float(ip.len)
-                features[3] = int(ip.flags)  # Convert FlagValue to int
-                features[4] = float(ip.frag)
-                features[5] = float(ip.ttl)
-                features[6] = float(ip.proto)
+                # Convert IP addresses to normalized features
+                features[0] = ip_to_normalized_feature(ip.src)
+                features[1] = ip_to_normalized_feature(ip.dst)
+                features[2] = (np.log1p(float(ip.len)) / np.log1p(65535)) * 2 - 1  # Map to [-1, 1]
+                features[3] = int(ip.flags) / 3.5 - 1  # Map to [-1, 1] assuming max flag value is 7
+                features[4] = float(ip.ttl) / 127.5 - 1  # Map to [-1, 1]
+                features[5] = float(ip.proto) / 127.5 - 1  # Map to [-1, 1]
                 human_readable.update({
                     'src_ip': ip.src,
                     'dst_ip': ip.dst,
                     'length': ip.len,
                     'flags': int(ip.flags),
-                    'frag': ip.frag,
                     'ttl': ip.ttl,
                     'protocol': protocol_map.get(ip.proto, "Unknown")
                 })
             except Exception as e:
                 logging.error(f"Error processing IP packet fields: {e}")
-                return None, None
+                return None, None, None
 
             if TCP in packet:
                 tcp = packet[TCP]
                 try:
-                    features[7] = float(tcp.sport)
-                    features[8] = float(tcp.dport)
-                    features[9] = int(tcp.flags)  # Convert FlagValue to int
-                    features[10] = float(tcp.window)
+                    features[6] = (np.log1p(float(tcp.sport)) / np.log1p(65535)) * 2 - 1
+                    features[7] = (np.log1p(float(tcp.dport)) / np.log1p(65535)) * 2 - 1
+                    features[8] = int(tcp.flags) / 127.5 - 1  # Map to [-1, 1]
+                    features[9] = (np.log1p(float(tcp.window)) / np.log1p(65535)) * 2 - 1
+                    features[10] = -1  # Placeholder for consistency
                     human_readable.update({
                         'src_port': tcp.sport,
                         'dst_port': tcp.dport,
@@ -558,14 +571,15 @@ def process_packet(packet):
                     })
                 except Exception as e:
                     logging.error(f"Error processing TCP packet fields: {e}")
-                    return None, None
+                    return None, None, None
             elif UDP in packet:
                 udp = packet[UDP]
                 try:
-                    features[7] = float(udp.sport)
-                    features[8] = float(udp.dport)
-                    features[9] = float(udp.len)
-                    features[10] = 0  # Padding to match TCP feature count
+                    features[6] = (np.log1p(float(udp.sport)) / np.log1p(65535)) * 2 - 1
+                    features[7] = (np.log1p(float(udp.dport)) / np.log1p(65535)) * 2 - 1
+                    features[8] = (np.log1p(float(udp.len)) / np.log1p(65535)) * 2 - 1
+                    features[9] = -1  # Placeholder for consistency
+                    features[10] = -1  # Placeholder for consistency
                     human_readable.update({
                         'src_port': udp.sport,
                         'dst_port': udp.dport,
@@ -573,10 +587,9 @@ def process_packet(packet):
                     })
                 except Exception as e:
                     logging.error(f"Error processing UDP packet fields: {e}")
-                    return None, None
+                    return None, None, None
             else:
-                # If neither TCP nor UDP, set these features to 0
-                features[7:11] = 0
+                features[6:11] = -1  # Set to -1 if neither TCP nor UDP
                 human_readable.update({
                     'src_port': 0,
                     'dst_port': 0,
@@ -584,16 +597,16 @@ def process_packet(packet):
                     'window_or_padding': 0
                 })
 
-            features[11] = float(len(packet))
+            features[11] = (np.log1p(float(len(packet))) / np.log1p(65535)) * 2 - 1
             human_readable['packet_size'] = len(packet)
 
-            return features, human_readable
+            return features, human_readable, packet.time
         else:
             logging.warning("Packet does not contain IP layer")
-            return None, None
+            return None, None, None
     except Exception as e:
         logging.error(f"Unexpected error in process_packet: {e}", exc_info=True)
-        return None, None
+        return None, None, None
 
 ##################################################
 # MODEL - thread 3

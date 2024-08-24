@@ -39,7 +39,7 @@ class TransformerAutoencoder(nn.Module):
 
     def compute_loss(self, outputs, inputs):
         output, _ = outputs
-        loss = F.mse_loss(output, inputs)
+        loss = F.smooth_l1_loss(output, inputs)
         logger.debug(f"Reconstruction loss: {loss.item()}")
         return loss
 
