@@ -11,3 +11,7 @@ def update_training_status(status, progress, message):
     training_status["status"] = status
     training_status["progress"] = progress
     training_status["message"] = message
+
+def get_training_status():
+    global training_status
+    return training_status

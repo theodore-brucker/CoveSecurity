@@ -16,7 +16,7 @@ from traffic_capture import (
     capture_live_traffic
 )
 from utils import CustomEncoder
-from training_utils import update_training_status
+from training_utils import update_training_status, get_training_status
 
 APP_PATH = os.getenv('APP_PATH', '/app/')
 KAFKA_BROKER = os.getenv('KAFKA_BROKER', 'kafka:9092')
@@ -37,16 +37,9 @@ FEATURE_COUNT = int(os.getenv('FEATURE_COUNT', 12))
  
 thread_local = threading.local()
 producer_manager, consumer_manager = initialize_kafka_managers(KAFKA_BROKER)
-
-def get_thread_name():
-    if not hasattr(thread_local, 'thread_name'):
-        thread_local.thread_name = threading.current_thread().name
-    return thread_local.thread_name
-
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(message)s',
                     handlers=[logging.StreamHandler()])
-
 
 logging.info(f"App directory contents: {os.listdir(APP_PATH)}")
 logging.info(f"Configured Kafka broker URL: {KAFKA_BROKER}")
@@ -54,9 +47,13 @@ logging.info(f"Configured TorchServe requests URL: {TORCHSERVE_REQUESTS_URL}")
 logging.info(f"Configured TorchServe management URL: {TORCHSERVE_MANAGEMENT_URL}")
 logging.info(f"Configured capture interface: {CAPTURE_INTERFACE}")
 
+def get_thread_name():
+    if not hasattr(thread_local, 'thread_name'):
+        thread_local.thread_name = threading.current_thread().name
+    return thread_local.thread_name
 
 ##################################################
-# PACKET PROCESSING
+# DATA PROCESSING
 ##################################################
 
 def process_raw_data():
@@ -128,15 +125,10 @@ def process_raw_data():
             logging.error(f"Unexpected error processing data from raw topic: {e}")
 
 ##################################################
-# MODEL - thread 3
+# MODEL
 ##################################################
 
 model_ready_event = threading.Event()
-training_status = {
-    "status": "idle",
-    "progress": 0,
-    "message": ""
-}
 
 def train_model_process():
     update_training_status("starting", 0, "Initiating model training process")
@@ -406,7 +398,7 @@ def start_training_job():
 
 @app.route('/status', methods=['GET'])
 def get_status():
-    return jsonify(training_status)
+    return jsonify(get_training_status())
 
 @app.route('/health', methods=['GET'])
 def health_check():
