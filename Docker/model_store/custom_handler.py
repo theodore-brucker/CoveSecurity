@@ -92,24 +92,31 @@ class SequenceAnomalyDetector(BaseHandler):
 
     def preprocess(self, data):
         logger.debug("Starting preprocessing")
-        logger.debug(f'Data type before processing: {type(data)}, Content: {data}')
+        logger.debug(f'Data type before processing: {type(data)}, Content: {data[:100]}')  # Log only the first 100 characters to avoid overwhelming logs
         
-        # Check if the data is in the training format (list of dicts with 'body')
-        if isinstance(data, list) and isinstance(data[0], dict) and 'body' in data[0]:
-            # Training data format
-            sequences = data[0]['body']
-            logger.debug("Data is a dictionary with a body field, likely for training")
-        # Check if the data is a list of sequences (inference with one sequence wrapped in a list)
-        elif isinstance(data, list) and isinstance(data[0], list) and len(data) > 0:
-            sequences = data  # Treat it as a single sequence wrapped in a list
-            logger.debug("Data is a list with a sequence, likely for inference")
-        
+        if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+            if 'body' in data[0]:
+                # Training data format from TorchServe
+                body = data[0]['body']
+                if isinstance(body, str):
+                    sequences = json.loads(body)
+                elif isinstance(body, dict):
+                    sequences = body.get('data', [])  # Assuming 'data' key contains the sequences
+                else:
+                    sequences = body  # Assume it's already the list of sequences
+            elif 'sequence' in data[0]:
+                # Direct sequence data format
+                sequences = [item['sequence'] for item in data]
+            else:
+                logger.error("Unexpected data format")
+                raise ValueError("Input data must be in the correct format")
+        elif isinstance(data, list) and isinstance(data[0], list):
+            sequences = data  # Treat it as a list of sequences
         else:
-            # Invalid data format
             logger.error("Invalid input data format")
-            raise ValueError("Input data must be a dictionary with a body key")
+            raise ValueError("Input data must be in the correct format")
 
-        logging.debug(sequences)
+        logging.debug(f"Sample of sequences: {sequences[:2]}")
         # Convert data to tensor
         tensor_data = torch.tensor(sequences, dtype=torch.float32)
         
@@ -191,6 +198,8 @@ class SequenceAnomalyDetector(BaseHandler):
 
     def train(self, data, context):
         logger.info("Starting model training/fine-tuning")
+        logger.debug(f"Received data type: {type(data)}")
+        logger.debug(f"Received data content (first 100 chars): {str(data)[:100]}")
 
         num_epochs = int(os.getenv('NUM_EPOCHS', 10))
         early_stopping_threshold = float(os.getenv('EARLY_STOPPING_THRESHOLD', 0.01))

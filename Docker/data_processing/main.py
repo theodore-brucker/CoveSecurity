@@ -24,6 +24,7 @@ RAW_TOPIC = os.getenv('RAW_TOPIC', 'raw_data')
 PROCESSED_TOPIC = os.getenv('PROCESSED_TOPIC', 'processed_data')
 PREDICTIONS_TOPIC = os.getenv('PREDICTIONS_TOPIC', 'predictions')
 TRAINING_TOPIC = os.getenv('TRAINING_TOPIC', 'training_data')
+LABELED_TOPIC = os.getenv('LABELED_TOPIC', 'labeled_data')
 FLASK_PORT = int(os.getenv('FLASK_PORT', 5001))
 CAPTURE_INTERFACE = os.getenv('CAPTURE_INTERFACE', 'eth0')
 TORCHSERVE_REQUESTS_URL = os.getenv('TORCHSERVE_REQUESTS', 'http://localhost:8080')
@@ -167,6 +168,32 @@ def check_torchserve_availability():
     logging.error("TorchServe is not available after multiple attempts")
     return False
 
+def fetch_labeled_data():
+    consumer = consumer_manager.get_consumer(LABELED_TOPIC, 'labeled_data_consumer_group')
+    labeled_data = []
+    try:
+        while True:
+            msg = consumer.poll(1.0)
+            if msg is None:
+                continue
+            if msg.error():
+                logging.error(f"Consumer error: {msg.error()}")
+                continue
+            
+            try:
+                value = json.loads(msg.value().decode('utf-8'))
+                labeled_data.append(value)
+            except json.JSONDecodeError as e:
+                logging.error(f"Error decoding message: {e}")
+            except Exception as e:
+                logging.error(f"Unexpected error processing message: {e}")
+    except Exception as e:
+        logging.error(f"Error fetching labeled data: {e}")
+    finally:
+        consumer_manager.close_consumer(consumer)
+    
+    return labeled_data
+
 def fetch_training_data():
     logging.info("Fetching all unread data from training topic")
     consumer_manager.consumer_config = consumer_manager.consumer_config.copy()
@@ -204,12 +231,12 @@ def fetch_training_data():
     logging.info(f"Fetched data of size {len(data)} from {TRAINING_TOPIC}")
     return data
 
-def train_and_set_inference_mode(data):
+def train_and_set_inference_mode(data, is_labeled=False):
     if not check_torchserve_availability():
         logging.error("Cannot proceed as TorchServe is not available")
         return False
 
-    if not train_model(data):
+    if not train_model(data, is_labeled):
         logging.error("Failed to train model")
         return False
 
@@ -234,7 +261,7 @@ def train_and_set_inference_mode(data):
 
     return False
 
-def train_model(data):
+def train_model(data, is_labeled=False):
     max_retries = 5
 
     logging.info("Attempting to train model.")
@@ -248,15 +275,23 @@ def train_model(data):
         logging.error(f"Error checking existing model registration: {e}")
 
     # Extract features from the data
-    sequences = [packet['sequence'] for packet in data]
+    if is_labeled:
+        sequences = [packet['sequence']['sequence'] for packet in data]
+    else:
+        sequences = [packet['sequence'] for packet in data]
     
     for attempt in range(max_retries):
         try:
             url = f"{TORCHSERVE_REQUESTS_URL}/predictions/{MODEL_NAME}"
             headers = {'X-Request-Type': 'train'}
             
+            payload = {
+                'data': sequences,
+                'is_labeled': is_labeled
+            }
+            
             logging.info(f"Sending model training request with {len(sequences)} sequences (attempt {attempt + 1})")
-            response = requests.post(url, json=sequences, headers=headers)
+            response = requests.post(url, json=payload, headers=headers)
             
             if response.status_code == 200:
                 training_result = response.json()
@@ -277,6 +312,29 @@ def train_model(data):
             time.sleep(min(30, 5 * (attempt + 1)))  # Linear backoff with a maximum of 30 seconds
     
     return False
+
+def train_with_labeled_data():
+    update_training_status("starting", 0, "Initiating model training with labeled data")
+
+    try:
+        update_training_status("checking_torchserve", 10, "Checking TorchServe availability")
+        if not check_torchserve_availability():
+            update_training_status("error", 0, "TorchServe is not available")
+            return
+
+        update_training_status("fetching_data", 20, "Fetching labeled data from Kafka")
+        labeled_data = fetch_labeled_data()
+        update_training_status("data_fetched", 40, f"Fetched {len(labeled_data)} labeled records from Kafka")
+
+        update_training_status("training", 50, "Training model with labeled data")
+        if train_and_set_inference_mode(labeled_data, is_labeled=True):
+            update_training_status("completed", 100, "Model training with labeled data completed and set to inference mode")
+            threading.Thread(target=prediction_thread).start()
+        else:
+            update_training_status("error", 0, "Failed to train model with labeled data and set to inference mode")
+    except Exception as e:
+        logging.error(f"Error during model training process with labeled data: {str(e)}")
+        update_training_status("error", 0, f"Error during training with labeled data: {str(e)}")
 
 def prediction_thread():
     logging.info("Starting prediction thread")
@@ -390,6 +448,12 @@ def train_data():
         return jsonify({"error": "Invalid training data provided"}), 400
 
     return jsonify({"message": "Training data uploaded"}), 202
+
+@app.route('/train_with_labeled_data', methods=['POST'])
+def start_train_with_labeled_data():
+    threading.Thread(target=train_with_labeled_data).start()
+    return jsonify({"message": "Training with labeled data initiated"}), 200
+
 
 @app.route('/training_start', methods=['POST'])
 def start_training_job():

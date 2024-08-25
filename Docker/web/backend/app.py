@@ -4,7 +4,7 @@ import threading
 import time
 import os
 from flask import Flask, jsonify, request
-from confluent_kafka import Consumer, KafkaException
+from confluent_kafka import Consumer, KafkaException, Producer
 from confluent_kafka.admin import AdminClient
 from flask_cors import CORS
 import requests
@@ -19,6 +19,7 @@ PROCESSED_TOPIC = os.getenv('PROCESSED_TOPIC', 'processed_data')
 PREDICTION_TOPIC = os.getenv('PREDICTION_TOPIC', 'predictions')
 TRAINING_TOPIC = os.getenv('TRAINING_TOPIC', 'training_data')
 TRAINING_DATA_PATH = os.getenv('TRAINING_DATA_PATH', '/app/training_data')
+LABELED_DATA_TOPIC = os.getenv('LABELED_DATA_TOPIC', 'labeled_data')
 
 MAX_RETRIES = int(os.getenv('MAX_RETRIES', '5'))
 RETRY_DELAY = int(os.getenv('RETRY_DELAY', '2'))
@@ -127,6 +128,9 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 
 # Initialize SocketIO
 socketio = SocketIO(app, cors_allowed_origins="*")
+
+# Initialize Kafka producer
+producer = Producer({'bootstrap.servers': KAFKA_BROKER})
 
 ##########################################
 # HANDLERS
@@ -253,6 +257,51 @@ def get_paginated_anomalous_sequences():
         'page': page,
         'per_page': per_page
     })
+
+@app.route('/mark_as_normal', methods=['POST'])
+def mark_as_normal():
+    data = request.json
+    sequence_id = data.get('sequence_id')
+    if not sequence_id:
+        return jsonify({"error": "Missing sequence_id"}), 400
+
+    # Fetch the original sequence data
+    # This is a placeholder - you need to implement the logic to fetch the original sequence data
+    original_data = fetch_sequence_data(sequence_id)
+    
+    if not original_data:
+        return jsonify({"error": "Sequence not found"}), 404
+
+    # Produce to the labeled_data topic
+    try:
+        producer.produce(
+            LABELED_DATA_TOPIC,
+            key=str(sequence_id),
+            value=json.dumps({"sequence": original_data, "label": "normal"})
+        )
+        producer.flush()
+        return jsonify({"message": "Sequence marked as normal"}), 200
+    except Exception as e:
+        logging.error(f"Error producing to labeled_data topic: {e}")
+        return jsonify({"error": "Failed to mark sequence as normal"}), 500
+
+def fetch_sequence_data(sequence_id):
+    # Implement the logic to fetch the original sequence data
+    # This could involve querying a database or making a request to another service
+    # For now, we'll return a dummy sequence
+    return [0.0] * 16  # Replace this with actual data fetching logic
+
+@app.route('/train_with_labeled_data', methods=['POST'])
+def train_with_labeled_data():
+    try:
+        # Send a request to the data processing service to start training with labeled data
+        response = requests.post(f'{DATA_PROCESSING_URL}/train_with_labeled_data')
+        if response.status_code == 200:
+            return jsonify({"message": "Training with labeled data initiated"}), 200
+        else:
+            return jsonify({"error": "Failed to initiate training"}), 500
+    except requests.RequestException as e:
+        return jsonify({"error": f"Error initiating training: {str(e)}"}), 500
 
 ##########################################
 # GETTERS
