@@ -83,7 +83,7 @@ services:
     volumes:
       - ./web/backend:/app
       - training_data:/app/training_data
-    environment:  #Running in Docker-Network so can use DNS resolution to get everything except data_processing which needs host.docker.internal
+    environment:
       - KAFKA_BROKER=kafka:9092
       - RAW_TOPIC=raw_data
       - PROCESSED_TOPIC=processed_data
@@ -92,7 +92,8 @@ services:
       - LABELED_TOPIC=labeled_data
       - MAX_RETRIES=5
       - RETRY_DELAY=2
-      - DATA_PROCESSING_URL=http://172.17.0.1:5001 #Address for the WSL instance, since DP runs on host mode instead of in docker network
+      - DATA_PROCESSING_URL=http://172.17.0.1:5001
+      - MONGO_URI=mongodb://mongodb:27017/
       - training_data:/app/training_data
     ports:
       - "5000:5000"
@@ -104,6 +105,7 @@ services:
       - "host.docker.internal:host-gateway"
     depends_on:
       - kafka
+      - mongodb
 
   web_frontend:
     build:
@@ -127,7 +129,7 @@ services:
     volumes:
       - scaler_data:/app/scaler_data
       - training_data:/app/training_data
-    environment: #Running on host (WSL) network so need to use exposed path to all containers in docker network...
+    environment:
       - KAFKA_BROKER=localhost:29092
       - RAW_TOPIC=raw_data
       - PROCESSED_TOPIC=processed_data
@@ -140,17 +142,48 @@ services:
       - ANOMALY_THRESHOLD=.5
       - WEB_BACKEND_URL=http://localhost:5000
       - MODEL_NAME=transformer_autoencoder
+      - MONGO_URI=mongodb://mongodb:27017/
       - training_data:/app/training_data
       - SEQUENCE_LENGTH=16
       - FEATURE_COUNT=12
-      - FLASK_PORT=5001 # Where this app is going to be served on http://172.17.0.1
+      - FLASK_PORT=5001
     depends_on:
       - kafka
       - torchserve
       - web_backend
+      - mongodb
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    
+
+  mongodb:
+    build:
+      context: ./database
+      dockerfile: Dockerfile
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./database/logs:/var/log/mongodb
+    networks:
+      - kafka_network
+    command: ["mongod", "--config", "/etc/mongod.conf"]
+
+  mongo-express:
+    image: mongo-express
+    ports:
+      - "28081:8081"
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://mongodb:27017/admin
+      ME_CONFIG_BASICAUTH_USERNAME: root
+      ME_CONFIG_BASICAUTH_PASSWORD: example
+    networks:
+      - kafka_network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - mongodb
+    restart: always
+
 networks:
   kafka_network:
     driver: bridge
@@ -158,3 +191,4 @@ networks:
 volumes:
   scaler_data:
   training_data:
+  mongodb_data:
