@@ -215,7 +215,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .refresh-button:hover {
-  background-color: #007A3A; /* Even darker shade for hover effect */
+  background-color: #007A3A;
   color: var(--text-primary);
 }
 
@@ -311,28 +311,22 @@ h1, h2, h3, h4, h5, h6 {
 
 /* Specific widths for each column */
 .data-table th:nth-child(1), .data-table td:nth-child(1) { 
-  width: 130px; /* Source IP */
+  width: 130px; /* Sequence ID */
 }
 
 .data-table th:nth-child(2), .data-table td:nth-child(2) { 
-  width: 130px; /* Destination IP */
+  width: 100px; /* Reconstruction Error */
 }
 
 .data-table th:nth-child(3), .data-table td:nth-child(3) { 
-  width: 50px; /* Protocol */
+  width: 80px; /* Is Anomaly */
 }
 
 .data-table th:nth-child(4), .data-table td:nth-child(4) { 
-  width: 50px; /* Source Port */
+  width: 120px; /* Actions */
 }
 
-.data-table th:nth-child(5), .data-table td:nth-child(5) { 
-  width: 50px; /* Destination Port */
-}
-
-.data-table th:nth-child(6), .data-table td:nth-child(6) { 
-  width: 50px; /* Flags */
-}
+/* Remove or comment out the unused column styles */
 
 .truncated-data {
   position: relative;
@@ -508,4 +502,11 @@ h1, h2, h3, h4, h5, h6 {
   padding: 15px;
   background-color: var(--card-bg);
   border-radius: 4px;
+}
+
+.mark-as-normal-button {
+  padding: 5px 10px;
+  font-size: 0.9em;
+  white-space: nowrap;
+  width: auto;
 }

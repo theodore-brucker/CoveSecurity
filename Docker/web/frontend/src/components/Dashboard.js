@@ -414,6 +414,7 @@ const Dashboard = () => {
                     <td>{sequence.is_anomaly ? 'Yes' : 'No'}</td>
                     <td>
                       <button 
+                        className="themed_button mark-as-normal-button" 
                         onClick={() => handleMarkAsNormal(sequence.id)}
                         disabled={isMarkingNormal}
                       >
