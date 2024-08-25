@@ -112,3 +112,6 @@ media/
 # Ignore backend temporary and uploaded files
 tmp/
 uploads/
+
+# Ignore Jupyter Notebooks
+*.ipynb
