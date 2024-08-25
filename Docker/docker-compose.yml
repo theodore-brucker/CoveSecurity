@@ -50,6 +50,7 @@ services:
       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic processed_data --replication-factor 1 --partitions 1
       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic predictions --replication-factor 1 --partitions 1
       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic training_data --replication-factor 1 --partitions 1
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic labeled_data --replication-factor 1 --partitions 1
       echo -e 'Successfully created the following topics:'
       kafka-topics --bootstrap-server kafka:9092 --list
       "
@@ -88,6 +89,7 @@ services:
       - PROCESSED_TOPIC=processed_data
       - PREDICTION_TOPIC=predictions
       - TRAINING_TOPIC=training_data
+      - LABELED_TOPIC=labeled_data
       - MAX_RETRIES=5
       - RETRY_DELAY=2
       - DATA_PROCESSING_URL=http://172.17.0.1:5001 #Address for the WSL instance, since DP runs on host mode instead of in docker network

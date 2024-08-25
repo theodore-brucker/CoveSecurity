@@ -3,6 +3,7 @@ import { io } from "socket.io-client";
 import ResizableCard from './ResizableCard';
 import DataTable from './DataTable';
 import logo from './Expanded-Cove-Logo.jpg';
+import axios from 'axios';
 
 const Dashboard = () => {
   // State variables
@@ -36,6 +37,7 @@ const Dashboard = () => {
   const anomalousSequencesRef = useRef([]);
 
   const [activeTab, setActiveTab] = useState('time');
+  const [isMarkingNormal, setIsMarkingNormal] = useState(false);
 
   // Utility functions
   const getStatusClass = (status) => {
@@ -190,6 +192,33 @@ const Dashboard = () => {
     }
   }, [currentPage, allAnomalousSequences, sequencesPerPage, updateDisplayedSequences]);
 
+  const handleMarkAsNormal = async (sequenceId) => {
+    setIsMarkingNormal(true);
+    try {
+      await axios.post('http://localhost:5000/mark_as_normal', { sequence_id: sequenceId });
+      setAllAnomalousSequences(prevSequences => 
+        prevSequences.filter(seq => seq.id !== sequenceId)
+      );
+      updateDisplayedSequences(
+        allAnomalousSequences.filter(seq => seq.id !== sequenceId),
+        currentPage
+      );
+    } catch (error) {
+      console.error('Error marking sequence as normal:', error);
+    } finally {
+      setIsMarkingNormal(false);
+    }
+  };
+
+  const handleTrainWithLabeledData = async () => {
+    try {
+      const response = await axios.post('http://localhost:5000/train_with_labeled_data');
+      setTrainingStatus({ status: 'in_progress', progress: 0, message: 'Training with labeled data initiated' });
+    } catch (error) {
+      setTrainingStatus({ status: 'error', progress: 0, message: `Error: ${error.message}` });
+    }
+  };
+
   useEffect(() => {
     const newSocket = io("http://localhost:5000", {
       transports: ["websocket"],
@@ -303,6 +332,7 @@ const Dashboard = () => {
         <div className="training-tabs">
           <button className={`tab-button ${activeTab === 'time' ? 'active' : ''}`} onClick={() => setActiveTab('time')}>Time Window</button>
           <button className={`tab-button ${activeTab === 'pcap' ? 'active' : ''}`} onClick={() => setActiveTab('pcap')}>PCAP File</button>
+          <button className={`tab-button ${activeTab === 'labeled' ? 'active' : ''}`} onClick={() => setActiveTab('labeled')}>Labeled Data</button>
         </div>
         
         <div className="tab-content">
@@ -332,6 +362,12 @@ const Dashboard = () => {
               </div>
               {file && <span className="file-name">{file.name}</span>}
               <button className="themed_button" onClick={() => handleTrainingData('pcap')} disabled={!file}>Submit PCAP File</button>
+            </div>
+          )}
+          
+          {activeTab === 'labeled' && (
+            <div className="labeled-data-section">
+              <button className="themed_button" onClick={handleTrainWithLabeledData}>Train with Labeled Data</button>
             </div>
           )}
         </div>
@@ -367,14 +403,23 @@ const Dashboard = () => {
                   <th>Sequence ID</th>
                   <th>Reconstruction Error</th>
                   <th>Is Anomaly</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {displayedSequences.map((sequence) => (
-                  <tr key={sequence.id} onClick={() => setSelectedSequence(sequence)} style={{cursor: 'pointer'}}>
-                    <td>{sequence.id}</td>
+                  <tr key={sequence.id}>
+                    <td onClick={() => setSelectedSequence(sequence)} style={{cursor: 'pointer'}}>{sequence.id}</td>
                     <td>{sequence.reconstruction_error.toFixed(4)}</td>
                     <td>{sequence.is_anomaly ? 'Yes' : 'No'}</td>
+                    <td>
+                      <button 
+                        onClick={() => handleMarkAsNormal(sequence.id)}
+                        disabled={isMarkingNormal}
+                      >
+                        Mark as Normal
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
