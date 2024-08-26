@@ -241,8 +241,9 @@ def produce_raw_data(feature_sequences, human_readable_sequences, is_training=Fa
     
     for idx, (feature_sequence, human_readable_sequence) in enumerate(zip(feature_sequences, human_readable_sequences)):
         try:
-            _id = generate_unique_id()
+            _id = str(uuid.uuid4())  # Generate a unique ID
             serialized_sequence = { 
+                "_id": _id,  # Include the ID in the message
                 "timestamp": datetime.now(),  # Use datetime object directly
                 "sequence": feature_sequence,
                 "human_readable": human_readable_sequence,
@@ -256,7 +257,7 @@ def produce_raw_data(feature_sequences, human_readable_sequences, is_training=Fa
             
             producer.produce(
                 RAW_TOPIC,
-                key=str(_id),
+                key=_id,  # Use the generated ID as the key
                 value=json.dumps(serialized_sequence, cls=CustomEncoder),
                 on_delivery=delivery_report
             )

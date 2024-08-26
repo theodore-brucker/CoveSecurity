@@ -74,7 +74,7 @@ def process_raw_data():
             value = json.loads(msg.value().decode('utf-8'))
             logging.debug(f"Received raw data message: {value}")
 
-            if not all(k in value for k in ('_id', 'sequence', 'is_training', 'human_readable')):
+            if not all(k in value for k in ('timestamp', 'sequence', 'is_training', 'human_readable', 'is_anomaly', 'is_false_positive', 'reconstruction_error')):
                 logging.error(f"Missing keys in the message: {value}")
                 continue
 
@@ -86,7 +86,6 @@ def process_raw_data():
             if not isinstance(sequence, list) or len(sequence) != SEQUENCE_LENGTH:
                 logging.error(f"Invalid sequence structure or length in message: {value}")
                 continue
-
             if len(sequence) != len(human_readable_list):
                 logging.error(f"Mismatch between sequence length and human_readable length in message: {value}")
                 continue
@@ -114,7 +113,6 @@ def process_raw_data():
                     key=str(_id),  # Ensure _id is converted to string
                     value=json.dumps(processed_value, cls=CustomEncoder),
                 )
-
             consumer.commit(msg)
         except json.JSONDecodeError as e:
             logging.error(f"Error decoding message: {e}")
