@@ -4,38 +4,39 @@ db.createCollection('sequences', {
   validator: {
     $jsonSchema: {
       bsonType: "object",
-      required: ["sequence_id", "timestamp", "packets", "is_anomaly", "is_training_data", "manual_classification"],
       properties: {
-        sequence_id: {
-          bsonType: "string",
-          description: "Unique identifier for the sequence"
-        },
         timestamp: {
           bsonType: "date",
           description: "Timestamp of the sequence"
         },
-        packets: {
-          bsonType: "array",
-          description: "Array of packets in the sequence"
+        sequence: {
+          bsonType: ["array", "null"],
+          description: "Array of feature sequences"
         },
-        is_anomaly: {
-          bsonType: "bool",
-          description: "Whether the sequence was detected as an anomaly"
-        },
-        is_training_data: {
-          bsonType: "bool",
+        is_training: {
+          bsonType: ["bool", "null"],
           description: "Whether the sequence was used for training"
         },
-        manual_classification: {
+        human_readable: {
+          bsonType: ["array", "null"],
+          description: "Human readable representation of the sequence"
+        },
+        is_anomaly: {
           bsonType: ["bool", "null"],
-          description: "Manual classification of false positive (null if not classified)"
+          description: "Whether the sequence was detected as an anomaly"
+        },
+        reconstruction_error: {
+          bsonType: ["double", "null"],
+          description: "Reconstruction error from the model"
+        },
+        is_false_positive: {
+          bsonType: ["bool", "null"],
+          description: "Whether the sequence was manually marked as a false positive"
         }
       }
     }
-  }
+  },
+  validationLevel: "moderate"
 });
 
-db.sequences.createIndex({ sequence_id: 1 }, { unique: true });
 db.sequences.createIndex({ timestamp: 1 });
-db.sequences.createIndex({ is_anomaly: 1 });
-db.sequences.createIndex({ is_training_data: 1 });

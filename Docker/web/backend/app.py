@@ -1,12 +1,15 @@
 from datetime import datetime, timedelta
+from decimal import Decimal
 import logging
 import threading
 import time
 import os
+import uuid
 from flask import Flask, jsonify, request
 from confluent_kafka import Consumer, KafkaException, Producer
 from confluent_kafka.admin import AdminClient
 from flask_cors import CORS
+import numpy as np
 import requests
 import json
 from flask_socketio import SocketIO
@@ -77,6 +80,30 @@ class ConsumerManager:
                     raise
             return self.consumers[key]
 
+class ProducerManager:
+    def __init__(self):
+        self.producers = {}
+        self.lock = threading.Lock()
+
+    def get_producer(self, topic):
+        with self.lock:
+            if topic not in self.producers:
+                config = producer_config.copy()
+                config['client.id'] = f'producer-{topic}'
+                try:
+                    self.producers[topic] = Producer(config)
+                    logging.info(f"Successfully created producer for topic: {topic}")
+                except KafkaException as e:
+                    logging.error(f"Failed to create producer for topic {topic}: {e}")
+                    raise
+            return self.producers[topic]
+        
+producer_config = {
+    'bootstrap.servers': KAFKA_BROKER,
+    'client.dns.lookup': 'use_all_dns_ips',
+    'broker.address.family': 'v4'
+}
+
 consumer_config = {
     'bootstrap.servers': KAFKA_BROKER,
     'auto.offset.reset': 'earliest',
@@ -84,6 +111,7 @@ consumer_config = {
     'broker.address.family': 'v4'
 }
 
+producer_manager = ProducerManager()
 consumer_manager = ConsumerManager(consumer_config)
 
 def broker_accessible(broker_address, max_retries=MAX_RETRIES, retry_delay=RETRY_DELAY):
@@ -123,14 +151,50 @@ def topic_exists(broker_address, topic_name, max_retries=MAX_RETRIES, retry_dela
 # FLASK UTILITY
 ##########################################
 
+
+from scapy.fields import EDecimal
+from datetime import datetime
+class CustomEncoder(json.JSONEncoder):
+    def default(self, obj):
+        try:
+            if obj is None:
+                return None
+            elif isinstance(obj, (Decimal, EDecimal)):
+                return str(obj)
+            elif isinstance(obj, bytes):
+                return obj.decode('utf-8', errors='replace')
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, (np.integer, np.floating)):
+                return obj.item()
+            elif isinstance(obj, datetime):
+                return obj.isoformat()
+            elif isinstance(obj, complex):
+                return [obj.real, obj.imag]
+            elif isinstance(obj, set):
+                return list(obj)
+            elif isinstance(obj, uuid.UUID):
+                return str(obj)
+            elif hasattr(obj, '__str__'):
+                return str(obj)
+            return super(CustomEncoder, self).default(obj)
+        except Exception as e:
+            logging.error(f"Error in CustomEncoder: {e} for object type {type(obj)}", exc_info=True)
+            return str(obj)  # Fall back to string representation
+        
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 # Initialize SocketIO
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# Initialize Kafka producer
-producer = Producer({'bootstrap.servers': KAFKA_BROKER})
+producer = producer_manager.get_producer(LABELED_DATA_TOPIC)
+
+def delivery_report(err, msg):
+    if err is not None:
+        logging.error(f'Message delivery failed: {err}')
+    else:
+        logging.info(f'Message delivered to {msg.topic()} [{msg.partition()}]')
 
 ##########################################
 # HANDLERS
@@ -261,35 +325,33 @@ def get_paginated_anomalous_sequences():
 @app.route('/mark_as_normal', methods=['POST'])
 def mark_as_normal():
     data = request.json
-    sequence_id = data.get('sequence_id')
-    if not sequence_id:
-        return jsonify({"error": "Missing sequence_id"}), 400
+    _id = data.get('_id')
+    if not _id:
+        return jsonify({"error": "Missing _id"}), 400
 
-    # Fetch the original sequence data
-    # This is a placeholder - you need to implement the logic to fetch the original sequence data
-    original_data = fetch_sequence_data(sequence_id)
+    update_data = {
+        "_id": _id,
+        "timestamp": datetime.now(),  # Current timestamp as datetime object
+        "sequence": None,  # We don't have the sequence data here, so set to None
+        "is_training": False,
+        "human_readable": None,  # We don't have this data, so set to None
+        "is_anomaly": False,  # Since we're marking it as normal, set this to False
+        "reconstruction_error": None,  # We don't have this data, so set to None
+        "is_false_positive": True  # This field is not in the schema, but we'll keep it for now
+    }
     
-    if not original_data:
-        return jsonify({"error": "Sequence not found"}), 404
-
-    # Produce to the labeled_data topic
     try:
         producer.produce(
             LABELED_DATA_TOPIC,
-            key=str(sequence_id),
-            value=json.dumps({"sequence": original_data, "label": "normal"})
+            key=str(_id),
+            value=json.dumps(update_data, cls=CustomEncoder),
+            callback=delivery_report
         )
         producer.flush()
         return jsonify({"message": "Sequence marked as normal"}), 200
     except Exception as e:
-        logging.error(f"Error producing to labeled_data topic: {e}")
+        logging.error(f"Error updating sequence {_id}: {e}")
         return jsonify({"error": "Failed to mark sequence as normal"}), 500
-
-def fetch_sequence_data(sequence_id):
-    # Implement the logic to fetch the original sequence data
-    # This could involve querying a database or making a request to another service
-    # For now, we'll return a dummy sequence
-    return [0.0] * 16  # Replace this with actual data fetching logic
 
 @app.route('/train_with_labeled_data', methods=['POST'])
 def train_with_labeled_data():
@@ -348,7 +410,7 @@ def get_raw_sample():
         if value and validate_data_size(value):
             return {
                 'id': value['id'],
-                'timestamp': value['timestamp'],
+                'timestamp': datetime.fromisoformat(value['timestamp']) if isinstance(value['timestamp'], str) else value['timestamp'],
                 'sequence': value['sequence'],
                 'human_readable': value.get('human_readable', {})
             }
@@ -370,7 +432,7 @@ def get_processed_sample():
         if value and validate_data_size(value):
             return {
                 'id': value['id'],
-                'timestamp': value['timestamp'],
+                'timestamp': datetime.fromisoformat(value['timestamp']) if isinstance(value['timestamp'], str) else value['timestamp'],
                 'sequence': value['sequence'],
                 'human_readable': value.get('human_readable', {})  # Ensure human_readable is included
             }
@@ -397,7 +459,7 @@ def get_training_sample():
             if value and validate_data_size(value):
                 return {
                     'id': value['id'],
-                    'timestamp': value['timestamp'],
+                    'timestamp': datetime.fromisoformat(value['timestamp']) if isinstance(value['timestamp'], str) else value['timestamp'],
                     'sequence': value['sequence'],
                     'human_readable': value['human_readable']
                 }

@@ -1,13 +1,21 @@
+from decimal import Decimal
 import json
 import logging
 import os
+import threading
 import time
+import uuid
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 from ts.torch_handler.base_handler import BaseHandler
 from torch.optim.lr_scheduler import ExponentialLR
 from transformer_autoencoder import TransformerAutoencoder
+from confluent_kafka import Consumer, KafkaException, Producer
+from datetime import datetime
+
+KAFKA_BROKER = os.getenv('KAFKA_BROKER', 'kafka:9092')
+PREDICTION_TOPIC = os.getenv('PREDICTION_TOPIC', 'predictions')
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -15,6 +23,63 @@ ANOMALY_THRESHOLD = float(os.getenv('ANOMALY_THRESHOLD', 1))
 SEQUENCE_LENGTH = int(os.getenv('SEQUENCE_LENGTH', 16))
 FEATURE_COUNT = int(os.getenv('FEATURE_COUNT', 12))
 MODEL_STORE_PATH = os.getenv('MODEL_STORE_PATH', '/home/model-server/model-store/')
+
+
+class ProducerManager:
+    def __init__(self):
+        self.producers = {}
+        self.lock = threading.Lock()
+
+    def get_producer(self, topic):
+        with self.lock:
+            if topic not in self.producers:
+                config = producer_config.copy()
+                config['client.id'] = f'producer-{topic}'
+                try:
+                    self.producers[topic] = Producer(config)
+                    logging.info(f"Successfully created producer for topic: {topic}")
+                except KafkaException as e:
+                    logging.error(f"Failed to create producer for topic {topic}: {e}")
+                    raise
+            return self.producers[topic]
+    
+producer_config = {
+    'bootstrap.servers': KAFKA_BROKER,
+    'client.dns.lookup': 'use_all_dns_ips',
+    'broker.address.family': 'v4'
+}
+
+producer_manager = ProducerManager(KAFKA_BROKER)
+
+from scapy.fields import EDecimal
+
+class CustomEncoder(json.JSONEncoder):
+    def default(self, obj):
+        try:
+            if obj is None:
+                return None
+            elif isinstance(obj, (Decimal, EDecimal)):
+                return str(obj)
+            elif isinstance(obj, bytes):
+                return obj.decode('utf-8', errors='replace')
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, (np.integer, np.floating)):
+                return obj.item()
+            elif isinstance(obj, datetime):
+                return obj.isoformat()
+            elif isinstance(obj, complex):
+                return [obj.real, obj.imag]
+            elif isinstance(obj, set):
+                return list(obj)
+            elif isinstance(obj, uuid.UUID):
+                return str(obj)
+            elif hasattr(obj, '__str__'):
+                return str(obj)
+            return super(CustomEncoder, self).default(obj)
+        except Exception as e:
+            logging.error(f"Error in CustomEncoder: {e} for object type {type(obj)}", exc_info=True)
+            return str(obj)  # Fall back to string representation
 
 class SequenceAnomalyDetector(BaseHandler):
     def __init__(self):
@@ -138,15 +203,48 @@ class SequenceAnomalyDetector(BaseHandler):
         logger.info("Starting postprocessing")
         anomaly_results = []
 
-        for i, (original, reconstructed, anomaly_score) in enumerate(inference_outputs):
-            anomaly_results.append({
-                "sequence_id": i,
-                "reconstruction_error": float(anomaly_score),
-                "is_anomaly": bool(float(anomaly_score) >= float(self.anomaly_threshold))
-            })
+        producer = producer_manager.get_producer(PREDICTION_TOPIC)
 
+        for i, (original, reconstructed, anomaly_score) in enumerate(inference_outputs):
+            is_anomaly = float(anomaly_score) >= float(self.anomaly_threshold)
+            
+            _id = original['_id']
+            update_data = {
+                "_id": _id,
+                "timestamp": datetime.now(),  # Current timestamp as float
+                "sequence": original.get('sequence', None),  # Use original sequence if available
+                "is_training": False,  # This is not a training instance
+                "human_readable": original.get('human_readable', None),  # Use original human_readable if available
+                "is_anomaly": is_anomaly,
+                "reconstruction_error": float(anomaly_score),
+                "is_false_positive": None  # This field is not in the schema, consider removing or adding to schema
+            }
+            
+            try:
+                producer.produce(
+                    PREDICTION_TOPIC,
+                    key=str(_id),
+                    value=json.dumps(update_data, cls=CustomEncoder),
+                    on_delivery=self.delivery_report
+                )
+
+                anomaly_results.append({
+                    "_id": _id,
+                    "reconstruction_error": float(anomaly_score),
+                    "is_anomaly": is_anomaly
+                })
+            except Exception as e:
+                logger.error(f"Error producing message for sequence {_id}: {e}")
+
+        producer.flush()
         logger.info(f"Postprocessing completed. Processed {len(anomaly_results)} sequences")
         return anomaly_results
+
+    def delivery_report(self, err, msg):
+        if err is not None:
+            logger.error(f'Message delivery failed: {err}')
+        else:
+            logger.debug(f'Message delivered to {msg.topic()} [{msg.partition()}]')
 
     def handle(self, data, context):
         logger.debug("Handling new request")

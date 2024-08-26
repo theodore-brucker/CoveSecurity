@@ -74,11 +74,11 @@ def process_raw_data():
             value = json.loads(msg.value().decode('utf-8'))
             logging.debug(f"Received raw data message: {value}")
 
-            if not all(k in value for k in ('id', 'sequence', 'is_training', 'human_readable')):
+            if not all(k in value for k in ('_id', 'sequence', 'is_training', 'human_readable')):
                 logging.error(f"Missing keys in the message: {value}")
                 continue
 
-            sequence_id = value['id']
+            _id = value['_id']
             is_training = value['is_training']
             sequence = value['sequence']
             human_readable_list = value['human_readable']
@@ -92,24 +92,27 @@ def process_raw_data():
                 continue
 
             processed_value = {
-                "id": sequence_id,
-                "timestamp": value.get('timestamp', time.time()),
+                "_id": _id,
+                "timestamp": datetime.now(),
                 "sequence": sequence,
                 "is_training": is_training,
-                "human_readable": human_readable_list
+                "human_readable": human_readable_list,
+                "is_anomaly": False,  # Default value, will be updated later
+                "reconstruction_error": None,  # Will be updated by the model
+                "is_false_positive": None  # This field is not in the schema, consider removing or adding to schema
             }
 
             logging.debug(f"Producing processed data: {processed_value}")
             processed_producer.produce(
                 topic=PROCESSED_TOPIC,
-                key=sequence_id,
+                key=str(_id),  # Ensure _id is converted to string
                 value=json.dumps(processed_value, cls=CustomEncoder),
             )
 
             if is_training:
                 training_producer.produce(
                     topic=TRAINING_TOPIC,
-                    key=sequence_id,
+                    key=str(_id),  # Ensure _id is converted to string
                     value=json.dumps(processed_value, cls=CustomEncoder),
                 )
 
@@ -336,6 +339,7 @@ def train_with_labeled_data():
         logging.error(f"Error during model training process with labeled data: {str(e)}")
         update_training_status("error", 0, f"Error during training with labeled data: {str(e)}")
 
+
 def prediction_thread():
     logging.info("Starting prediction thread")
     consumer = consumer_manager.get_consumer(PROCESSED_TOPIC, 'prediction_group')
@@ -360,40 +364,58 @@ def prediction_thread():
             try:
                 value = json.loads(msg.value().decode('utf-8'))
                 logging.debug(f"Received message: {value}")
-                if 'id' not in value or 'sequence' not in value:
-                    logging.warning(f"Received message with missing 'id' or 'sequence': {value}")
+                
+                # Check for required fields
+                required_fields = ['_id', 'sequence', 'timestamp', 'is_training']
+                if not all(field in value for field in required_fields):
+                    logging.warning(f"Received message missing required fields: {value}")
                     continue
                 
-                if not isinstance(value['sequence'], list) or len(value['sequence']) != SEQUENCE_LENGTH:
-                    logging.warning(f"Invalid sequence structure or length. Expected list of length {SEQUENCE_LENGTH}, got {type(value['sequence'])} of length {len(value['sequence'])}")
+                _id = value['_id']
+                sequence = value['sequence']
+                
+                if not isinstance(sequence, list) or len(sequence) != SEQUENCE_LENGTH:
+                    logging.warning(f"Invalid sequence structure or length for {_id}. Expected list of length {SEQUENCE_LENGTH}, got {type(sequence)} of length {len(sequence)}")
                     continue
                 
-                prediction = query_model(value['sequence'])
+                prediction = query_model(sequence)
                 
                 if "error" in prediction:
-                    logging.error(f"Error in prediction: {prediction['error']}")
+                    logging.error(f"Error in prediction for {_id}: {prediction['error']}")
                     continue
                 
                 anomaly_results = prediction.get('anomaly_results', [])
                 if not anomaly_results:
-                    logging.warning("No anomaly results in prediction")
+                    logging.warning(f"No anomaly results in prediction for {_id}")
                     continue
 
                 for result in anomaly_results:
-                    sequence_id = value['id']
-                    sequence_human_readable = value.get('human_readable', [])
                     reconstruction_error = float(result['reconstruction_error'])
                     is_anomaly = reconstruction_error >= float(ANOMALY_THRESHOLD)
                     output = {
-                        "id": sequence_id,
-                        "reconstruction_error": reconstruction_error,
+                        "_id": _id,
+                        "timestamp": datetime.now(),  # Use current UTC time
+                        "sequence": value['sequence'],
+                        "human_readable": value.get('human_readable', []),
                         "is_anomaly": is_anomaly,
-                        "human_readable": sequence_human_readable
+                        "is_training": value['is_training'],
+                        "reconstruction_error": reconstruction_error,
+                        "is_false_positive": None  # This field is not in the schema, consider removing or adding to schema
                     }
-                    logging.debug(f'Producing prediction for sequence {sequence_id}: is_anomaly = {is_anomaly}, reconstruction_error = {reconstruction_error}')
-                    producer.produce(PREDICTIONS_TOPIC, key=sequence_id, value=json.dumps(output))                
+                    logging.debug(f'Producing prediction for sequence {_id}: is_anomaly = {is_anomaly}, reconstruction_error = {reconstruction_error}')
+                    
+                    logging.info(f"Producing processed data to topic '{PREDICTIONS_TOPIC}':")
+                    logging.info(f"Key: {_id}")
+                    logging.info(f"Value: {json.dumps(output, indent=2, cls=CustomEncoder)}")
+
+                    producer.produce(
+                        PREDICTIONS_TOPIC, 
+                        key=str(_id), 
+                        value=json.dumps(output, cls=CustomEncoder),
+                        on_delivery=delivery_report
+                    )                
                 producer.flush()
-                logging.debug(f"Produced prediction for sequence {sequence_id}")
+                logging.debug(f"Produced prediction for sequence {_id}")
             except json.JSONDecodeError as e:
                 logging.error(f"Error decoding message: {e}")
             except Exception as e:
@@ -404,6 +426,12 @@ def prediction_thread():
     finally:
         consumer.close()
         logging.info("Prediction thread ended.")
+
+def delivery_report(err, msg):
+    if err is not None:
+        logging.error(f'Message delivery failed: {err}')
+    else:
+        logging.debug(f'Message delivered to {msg.topic()} [{msg.partition()}]')
 
 def wait_for_model_ready():
     logging.info("Waiting for model to be ready...")

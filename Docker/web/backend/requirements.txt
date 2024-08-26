@@ -4,3 +4,5 @@ flask_sse
 flask_socketio
 confluent_kafka>=1.0.0
 requests
+numpy
+scapy

@@ -195,7 +195,7 @@ const Dashboard = () => {
   const handleMarkAsNormal = async (sequenceId) => {
     setIsMarkingNormal(true);
     try {
-      await axios.post('http://localhost:5000/mark_as_normal', { sequence_id: sequenceId });
+      await axios.post('http://localhost:5000/mark_as_normal', { _id: sequenceId });
       setAllAnomalousSequences(prevSequences => 
         prevSequences.filter(seq => seq.id !== sequenceId)
       );
