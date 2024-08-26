@@ -330,7 +330,6 @@ def mark_as_normal():
         return jsonify({"error": "Missing _id"}), 400
 
     update_data = {
-        "_id": _id,
         "timestamp": datetime.now(),  # Current timestamp as datetime object
         "sequence": None,  # We don't have the sequence data here, so set to None
         "is_training": False,

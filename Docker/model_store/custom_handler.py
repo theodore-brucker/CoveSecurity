@@ -210,7 +210,6 @@ class SequenceAnomalyDetector(BaseHandler):
             
             _id = original['_id']
             update_data = {
-                "_id": _id,
                 "timestamp": datetime.now(),  # Current timestamp as float
                 "sequence": original.get('sequence', None),  # Use original sequence if available
                 "is_training": False,  # This is not a training instance

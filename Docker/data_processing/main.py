@@ -92,7 +92,6 @@ def process_raw_data():
                 continue
 
             processed_value = {
-                "_id": _id,
                 "timestamp": datetime.now(),
                 "sequence": sequence,
                 "is_training": is_training,
@@ -393,7 +392,6 @@ def prediction_thread():
                     reconstruction_error = float(result['reconstruction_error'])
                     is_anomaly = reconstruction_error >= float(ANOMALY_THRESHOLD)
                     output = {
-                        "_id": _id,
                         "timestamp": datetime.now(),  # Use current UTC time
                         "sequence": value['sequence'],
                         "human_readable": value.get('human_readable', []),

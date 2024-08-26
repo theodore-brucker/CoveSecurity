@@ -243,7 +243,6 @@ def produce_raw_data(feature_sequences, human_readable_sequences, is_training=Fa
         try:
             _id = generate_unique_id()
             serialized_sequence = { 
-                "_id": _id,  # Include _id in the message body
                 "timestamp": datetime.now(),  # Use datetime object directly
                 "sequence": feature_sequence,
                 "human_readable": human_readable_sequence,
