@@ -1,6 +1,10 @@
-flask
 flask_cors
-flask_sse
 flask_socketio
 confluent_kafka>=1.0.0
 requests
+numpy
+scapy
+flask==2.0.2
+pymongo==4.1.1
+flask-pymongo==2.3.0
+Werkzeug==2.2.2

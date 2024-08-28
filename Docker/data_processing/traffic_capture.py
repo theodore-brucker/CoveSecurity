@@ -240,59 +240,39 @@ def produce_raw_data(feature_sequences, human_readable_sequences, is_training=Fa
     valid_sequences = 0
     
     for idx, (feature_sequence, human_readable_sequence) in enumerate(zip(feature_sequences, human_readable_sequences)):
-        logging.debug(f"Processing sequence {idx}. Type: {type(feature_sequence)}, Length: {len(feature_sequence) if isinstance(feature_sequence, (list, np.ndarray)) else 'N/A'}")
-        
-        # Ensure feature_sequence is a list of Python native types
-        feature_sequence = [numpy_to_python(packet) for packet in feature_sequence]
-        
-        # Convert human_readable_sequence to Python native types
-        human_readable_sequence = [
-            {k: numpy_to_python(v) for k, v in packet.items()}
-            for packet in human_readable_sequence
-        ]
-        
-        if len(feature_sequence) != SEQUENCE_LENGTH:
-            logging.warning(f"Skipping sequence {idx} of length {len(feature_sequence)}. Expected {SEQUENCE_LENGTH}")
-            continue
-        
-        # Check packet structure
-        if not all(isinstance(packet, list) and len(packet) == FEATURE_COUNT for packet in feature_sequence):
-            logging.warning(f"Invalid packet structure in sequence {idx}. Expected {SEQUENCE_LENGTH} packets, each with {FEATURE_COUNT} features.")
-            continue
-        
-        # Check human_readable_sequence length
-        if len(human_readable_sequence) != SEQUENCE_LENGTH:
-            logging.warning(f"Human readable sequence length mismatch in sequence {idx}. Expected {SEQUENCE_LENGTH}, got {len(human_readable_sequence)}")
-            continue
-        
         try:
-            serialized_sequence = {
-                "id": generate_unique_id(),
-                "timestamp": time.time(),
+            _id = str(uuid.uuid4())  # Generate a unique ID
+            serialized_sequence = { 
+                "_id": _id,  # Include the ID in the message
+                "timestamp": datetime.now(),  # Use datetime object directly
                 "sequence": feature_sequence,
+                "human_readable": human_readable_sequence,
+                "is_anomaly": False,  # This will be updated later by the model
                 "is_training": is_training,
-                "human_readable": human_readable_sequence
+                "is_false_positive": None,  # This will be updated based on user feedback
+                "reconstruction_error": None  # This will be updated by the model
             }
             
             logging.debug(f"Serializing sequence {idx}")
-            json_data = json.dumps(serialized_sequence, cls=CustomEncoder)
-            logging.debug(f"Successfully serialized sequence {idx}")
             
             producer.produce(
                 RAW_TOPIC,
-                key=serialized_sequence['id'],
-                value=json_data
+                key=_id,  # Use the generated ID as the key
+                value=json.dumps(serialized_sequence, cls=CustomEncoder),
+                on_delivery=delivery_report
             )
-            producer.poll(0)
             valid_sequences += 1
         except Exception as e:
             logging.error(f"Error producing sequence {idx}: {e}", exc_info=True)
     
-    try:
-        producer.flush()
-        logging.debug(f'Finished producing {valid_sequences} out of {len(feature_sequences)} sequences.')
-    except Exception as e:
-        logging.error(f"Error flushing producer: {e}", exc_info=True)
+    producer.flush()
+    logging.debug(f'Finished producing {valid_sequences} out of {len(feature_sequences)} sequences.')
+
+def delivery_report(err, msg):
+    if err is not None:
+        logging.error(f'Message delivery failed: {err}')
+    else:
+        logging.debug(f'Message delivered to {msg.topic()} [{msg.partition()}]')
 
 def generate_unique_id():
     return str(uuid.uuid4())

@@ -74,11 +74,11 @@ def process_raw_data():
             value = json.loads(msg.value().decode('utf-8'))
             logging.debug(f"Received raw data message: {value}")
 
-            if not all(k in value for k in ('id', 'sequence', 'is_training', 'human_readable')):
+            if not all(k in value for k in ('_id', 'timestamp', 'sequence', 'is_training', 'human_readable', 'is_anomaly', 'is_false_positive', 'reconstruction_error')):
                 logging.error(f"Missing keys in the message: {value}")
                 continue
 
-            sequence_id = value['id']
+            _id = value['_id']
             is_training = value['is_training']
             sequence = value['sequence']
             human_readable_list = value['human_readable']
@@ -86,33 +86,34 @@ def process_raw_data():
             if not isinstance(sequence, list) or len(sequence) != SEQUENCE_LENGTH:
                 logging.error(f"Invalid sequence structure or length in message: {value}")
                 continue
-
             if len(sequence) != len(human_readable_list):
                 logging.error(f"Mismatch between sequence length and human_readable length in message: {value}")
                 continue
 
             processed_value = {
-                "id": sequence_id,
-                "timestamp": value.get('timestamp', time.time()),
+                "_id": _id,  # Include the _id from the raw data
+                "timestamp": datetime.now(),
                 "sequence": sequence,
                 "is_training": is_training,
-                "human_readable": human_readable_list
+                "human_readable": human_readable_list,
+                "is_anomaly": False,  # Default value, will be updated later
+                "reconstruction_error": None,  # Will be updated by the model
+                "is_false_positive": None  # This field is not in the schema, consider removing or adding to schema
             }
 
             logging.debug(f"Producing processed data: {processed_value}")
             processed_producer.produce(
                 topic=PROCESSED_TOPIC,
-                key=sequence_id,
+                key=str(_id),
                 value=json.dumps(processed_value, cls=CustomEncoder),
             )
 
             if is_training:
                 training_producer.produce(
                     topic=TRAINING_TOPIC,
-                    key=sequence_id,
+                    key=str(_id),
                     value=json.dumps(processed_value, cls=CustomEncoder),
                 )
-
             consumer.commit(msg)
         except json.JSONDecodeError as e:
             logging.error(f"Error decoding message: {e}")
@@ -249,16 +250,21 @@ def train_and_set_inference_mode(data, is_labeled=False):
             
             response = requests.put(url, params=params)
             response.raise_for_status()
-            logging.info("Model set to inference mode successfully")
-            model_ready_event.set()
-            return True
+            logging.info(f"PUT request successful, status code: {response.status_code}")
+            
+            # Verify that the model is in inference mode
+            if check_model_availability():
+                logging.info("Model set to inference mode successfully")
+                model_ready_event.set()
+                return True
+            else:
+                logging.warning(f"Model not in READY state after setting to inference mode (attempt {attempt + 1})")
         except requests.exceptions.RequestException as e:
-            if attempt == max_retries - 1:
-                logging.error(f"Error setting model to inference mode after {max_retries} attempts: {e}")
-                return False
             logging.warning(f"Error setting model to inference mode (attempt {attempt + 1}): {e}")
-            time.sleep(min(30, 2 ** attempt))  # Exponential backoff with a maximum of 30 seconds
+        
+        time.sleep(min(30, 2 ** attempt))  # Exponential backoff with a maximum of 30 seconds
 
+    logging.error("Failed to set model to inference mode after all attempts")
     return False
 
 def train_model(data, is_labeled=False):
@@ -275,10 +281,18 @@ def train_model(data, is_labeled=False):
         logging.error(f"Error checking existing model registration: {e}")
 
     # Extract features from the data
-    if is_labeled:
-        sequences = [packet['sequence']['sequence'] for packet in data]
-    else:
-        sequences = [packet['sequence'] for packet in data]
+    try:
+        if is_labeled:
+            sequences = [packet['sequence']['sequence'] for packet in data]
+        else:
+            sequences = [packet['sequence'] for packet in data]
+        
+        logging.info(f"Extracted {len(sequences)} sequences from data")
+        logging.debug(f"First sequence: {sequences[0]}")
+    except Exception as e:
+        logging.error(f"Error extracting sequences from data: {e}")
+        logging.debug(f"Data sample: {data[:5]}")  # Log a sample of the data
+        return False
     
     for attempt in range(max_retries):
         try:
@@ -325,6 +339,7 @@ def train_with_labeled_data():
         update_training_status("fetching_data", 20, "Fetching labeled data from Kafka")
         labeled_data = fetch_labeled_data()
         update_training_status("data_fetched", 40, f"Fetched {len(labeled_data)} labeled records from Kafka")
+        logging.debug(f"Sample of fetched data: {labeled_data[:5]}")  # Log a sample of the fetched data
 
         update_training_status("training", 50, "Training model with labeled data")
         if train_and_set_inference_mode(labeled_data, is_labeled=True):
@@ -333,14 +348,16 @@ def train_with_labeled_data():
         else:
             update_training_status("error", 0, "Failed to train model with labeled data and set to inference mode")
     except Exception as e:
-        logging.error(f"Error during model training process with labeled data: {str(e)}")
+        logging.error(f"Error during model training process with labeled data: {str(e)}", exc_info=True)
         update_training_status("error", 0, f"Error during training with labeled data: {str(e)}")
+
 
 def prediction_thread():
     logging.info("Starting prediction thread")
     consumer = consumer_manager.get_consumer(PROCESSED_TOPIC, 'prediction_group')
 
     wait_for_model_ready()
+    logging.info("Model is ready. Starting to process messages.")
     
     try:
         producer = producer_manager.get_producer(PREDICTIONS_TOPIC)
@@ -350,6 +367,11 @@ def prediction_thread():
 
     try:
         while True:
+            if not check_model_availability():
+                logging.error("Model is not available. Waiting before retrying...")
+                time.sleep(10)  # Wait for 10 seconds before retrying
+                continue
+
             msg = consumer.poll(1.0)
             if msg is None:
                 continue
@@ -359,41 +381,59 @@ def prediction_thread():
 
             try:
                 value = json.loads(msg.value().decode('utf-8'))
-                logging.debug(f"Received message: {value}")
-                if 'id' not in value or 'sequence' not in value:
-                    logging.warning(f"Received message with missing 'id' or 'sequence': {value}")
+                logging.info(f"Processing message: {value['_id']}")
+                
+                # Check for required fields
+                required_fields = ['_id', 'sequence', 'timestamp', 'is_training']
+                if not all(field in value for field in required_fields):
+                    logging.warning(f"Received message missing required fields: {value}")
                     continue
                 
-                if not isinstance(value['sequence'], list) or len(value['sequence']) != SEQUENCE_LENGTH:
-                    logging.warning(f"Invalid sequence structure or length. Expected list of length {SEQUENCE_LENGTH}, got {type(value['sequence'])} of length {len(value['sequence'])}")
+                _id = value['_id']
+                sequence = value['sequence']
+                
+                if not isinstance(sequence, list) or len(sequence) != SEQUENCE_LENGTH:
+                    logging.warning(f"Invalid sequence structure or length for {_id}. Expected list of length {SEQUENCE_LENGTH}, got {type(sequence)} of length {len(sequence)}")
                     continue
                 
-                prediction = query_model(value['sequence'])
+                prediction = query_model(sequence)
                 
                 if "error" in prediction:
-                    logging.error(f"Error in prediction: {prediction['error']}")
+                    logging.error(f"Error in prediction for {_id}: {prediction['error']}")
                     continue
                 
                 anomaly_results = prediction.get('anomaly_results', [])
                 if not anomaly_results:
-                    logging.warning("No anomaly results in prediction")
+                    logging.warning(f"No anomaly results in prediction for {_id}")
                     continue
 
                 for result in anomaly_results:
-                    sequence_id = value['id']
-                    sequence_human_readable = value.get('human_readable', [])
                     reconstruction_error = float(result['reconstruction_error'])
                     is_anomaly = reconstruction_error >= float(ANOMALY_THRESHOLD)
                     output = {
-                        "id": sequence_id,
-                        "reconstruction_error": reconstruction_error,
+                        "_id": _id,  # Include the _id in the output
+                        "timestamp": datetime.now(),  # Use current UTC time
+                        "sequence": value['sequence'],
+                        "human_readable": value.get('human_readable', []),
                         "is_anomaly": is_anomaly,
-                        "human_readable": sequence_human_readable
+                        "is_training": value['is_training'],
+                        "reconstruction_error": reconstruction_error,
+                        "is_false_positive": None  # This field is not in the schema, consider removing or adding to schema
                     }
-                    logging.debug(f'Producing prediction for sequence {sequence_id}: is_anomaly = {is_anomaly}, reconstruction_error = {reconstruction_error}')
-                    producer.produce(PREDICTIONS_TOPIC, key=sequence_id, value=json.dumps(output))                
+                    logging.debug(f'Producing prediction for sequence {_id}: is_anomaly = {is_anomaly}, reconstruction_error = {reconstruction_error}')
+                    
+                    logging.debug(f"Producing processed data to topic '{PREDICTIONS_TOPIC}':")
+                    logging.debug(f"Key: {_id}")
+                    logging.debug(f"Value: {json.dumps(output, indent=2, cls=CustomEncoder)}")
+
+                    producer.produce(
+                        PREDICTIONS_TOPIC, 
+                        key=str(_id), 
+                        value=json.dumps(output, cls=CustomEncoder),
+                        on_delivery=delivery_report
+                    )                
                 producer.flush()
-                logging.debug(f"Produced prediction for sequence {sequence_id}")
+                logging.debug(f"Produced prediction for sequence {_id}")
             except json.JSONDecodeError as e:
                 logging.error(f"Error decoding message: {e}")
             except Exception as e:
@@ -404,6 +444,12 @@ def prediction_thread():
     finally:
         consumer.close()
         logging.info("Prediction thread ended.")
+
+def delivery_report(err, msg):
+    if err is not None:
+        logging.error(f'Message delivery failed: {err}')
+    else:
+        logging.debug(f'Message delivered to {msg.topic()} [{msg.partition()}]')
 
 def wait_for_model_ready():
     logging.info("Waiting for model to be ready...")
@@ -422,8 +468,40 @@ def query_model(data):
         return prediction
     except requests.exceptions.RequestException as e:
         logging.error(f"Error querying model: {e}")
-        return {"error": "Failed to get prediction"}
+        if hasattr(e, 'response') and e.response is not None:
+            logging.error(f"Response status code: {e.response.status_code}")
+            logging.error(f"Response content: {e.response.text}")
+        return {"error": f"Failed to get prediction: {str(e)}"}
 
+def check_model_availability():
+    try:
+        url = f"{TORCHSERVE_MANAGEMENT_URL}/models/{MODEL_NAME}"
+        response = requests.get(url)
+        response.raise_for_status()
+        model_status = response.json()
+        
+        if not model_status or not isinstance(model_status, list) or len(model_status) == 0:
+            logging.warning("No models found in status response")
+            return False
+        
+        model_info = model_status[0]
+        if 'workers' not in model_info or not model_info['workers']:
+            logging.warning("No workers found for the model")
+            return False
+        
+        worker_status = model_info['workers'][0]['status']
+        if worker_status != 'READY':
+            logging.warning(f"Model worker is not in READY state. Current state: {worker_status}")
+            return False
+        
+        logging.info("Model is available and ready")
+        return True
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error checking model availability: {e}")
+        return False
+    except (KeyError, IndexError, TypeError) as e:
+        logging.error(f"Error parsing model status response: {e}")
+        return False
 
 ##################################################
 # FLASK FOR MODEL TRAINING - thread 4

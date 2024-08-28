@@ -1,0 +1,32 @@
+{
+  "name": "mongodb-sink",
+  "config": {
+    "connector.class": "com.mongodb.kafka.connect.MongoSinkConnector",
+    "tasks.max": "1",
+    "topics": "processed_data,predictions,training_data,labeled_data",
+    "connection.uri": "mongodb://mongodb:27017",
+    "database": "network_sequences",
+    "collection": "sequences",
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false",
+    "document.id.strategy": "com.mongodb.kafka.connect.sink.processor.id.strategy.UuidStrategy",
+    "document.id.strategy.overwrite.existing": "true",
+    "writemodel.strategy": "com.mongodb.kafka.connect.sink.writemodel.strategy.UpdateOneDefaultStrategy",
+    "delete.on.null.values": false,
+    "max.batch.size": "0",
+    "errors.tolerance": "all",
+    "errors.log.enable": true,
+    "errors.log.include.messages": true,
+    "transforms": "ensureFields,convertTimestamp",
+    "transforms.ensureFields.type": "org.apache.kafka.connect.transforms.InsertField$Value",
+    "transforms.ensureFields.timestamp.field": "timestamp",
+    "transforms.ensureFields.is_training.field": "is_training",
+    "transforms.ensureFields.is_training.value": "false",
+    "transforms.convertTimestamp.type": "org.apache.kafka.connect.transforms.TimestampConverter$Value",
+    "transforms.convertTimestamp.target.type": "Timestamp",
+    "transforms.convertTimestamp.field": "timestamp",
+    "transforms.convertTimestamp.format": "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+    "updateone.business.key": "_id"
+  }
+}

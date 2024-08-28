@@ -16,7 +16,6 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://0.0.0.0:29092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
@@ -83,7 +82,7 @@ services:
     volumes:
       - ./web/backend:/app
       - training_data:/app/training_data
-    environment:  #Running in Docker-Network so can use DNS resolution to get everything except data_processing which needs host.docker.internal
+    environment:
       - KAFKA_BROKER=kafka:9092
       - RAW_TOPIC=raw_data
       - PROCESSED_TOPIC=processed_data
@@ -92,7 +91,8 @@ services:
       - LABELED_TOPIC=labeled_data
       - MAX_RETRIES=5
       - RETRY_DELAY=2
-      - DATA_PROCESSING_URL=http://172.17.0.1:5001 #Address for the WSL instance, since DP runs on host mode instead of in docker network
+      - DATA_PROCESSING_URL=http://172.17.0.1:5001
+      - MONGO_URI=mongodb://mongodb:27017/
       - training_data:/app/training_data
     ports:
       - "5000:5000"
@@ -104,6 +104,7 @@ services:
       - "host.docker.internal:host-gateway"
     depends_on:
       - kafka
+      - mongodb
 
   web_frontend:
     build:
@@ -127,7 +128,7 @@ services:
     volumes:
       - scaler_data:/app/scaler_data
       - training_data:/app/training_data
-    environment: #Running on host (WSL) network so need to use exposed path to all containers in docker network...
+    environment:
       - KAFKA_BROKER=localhost:29092
       - RAW_TOPIC=raw_data
       - PROCESSED_TOPIC=processed_data
@@ -140,17 +141,94 @@ services:
       - ANOMALY_THRESHOLD=.5
       - WEB_BACKEND_URL=http://localhost:5000
       - MODEL_NAME=transformer_autoencoder
+      - MONGO_URI=mongodb://mongodb:27017/
       - training_data:/app/training_data
       - SEQUENCE_LENGTH=16
       - FEATURE_COUNT=12
-      - FLASK_PORT=5001 # Where this app is going to be served on http://172.17.0.1
+      - FLASK_PORT=5001
     depends_on:
       - kafka
       - torchserve
       - web_backend
+      - mongodb
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    
+
+  mongodb:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./database/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+      # Comment out or remove the next line:
+      # - mongodb_data:/data/db
+    networks:
+      - kafka_network
+
+  mongo-express:
+    image: mongo-express
+    ports:
+      - "28081:8081"
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://mongodb:27017/admin
+      ME_CONFIG_BASICAUTH_USERNAME: root
+      ME_CONFIG_BASICAUTH_PASSWORD: example
+    networks:
+      - kafka_network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - mongodb
+    restart: always
+
+  kafka-connect:
+    image: confluentinc/cp-kafka-connect:latest
+    depends_on:
+      - kafka
+    volumes:
+      - ./kafka/create-topics.sh:/create-topics.sh:ro
+      - ./kafka/connect-mongodb-sink.json:/connect-mongodb-sink.json:ro
+    command:
+      - bash
+      - -c
+      - |
+        /create-topics.sh
+        echo "Waiting for topics to be created..."
+        sleep 10
+        confluent-hub install --no-prompt mongodb/kafka-connect-mongodb:latest
+        /etc/confluent/docker/run &
+        echo "Waiting for Kafka Connect to start..."
+        sleep 35
+        echo "Listing installed plugins:"
+        ls -R /usr/share/java /usr/share/confluent-hub-components
+        echo "Attempting to create connector:"
+        curl -v -X POST -H "Content-Type: application/json" --data @/connect-mongodb-sink.json http://localhost:8083/connectors
+        echo "Connector creation attempt complete. Checking connector status:"
+        curl -v http://localhost:8083/connectors
+        echo "Entering sleep loop..."
+        while true; do sleep 30; done
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: kafka:9092
+      CONNECT_REST_PORT: 8083
+      CONNECT_GROUP_ID: "compose-connect-group"
+      CONNECT_CONFIG_STORAGE_TOPIC: "docker-connect-configs"
+      CONNECT_OFFSET_STORAGE_TOPIC: "docker-connect-offsets"
+      CONNECT_STATUS_STORAGE_TOPIC: "docker-connect-status"
+      CONNECT_KEY_CONVERTER: "org.apache.kafka.connect.storage.StringConverter"
+      CONNECT_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_INTERNAL_KEY_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_INTERNAL_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_REST_ADVERTISED_HOST_NAME: "kafka-connect"
+      CONNECT_LOG4J_ROOT_LOGLEVEL: "INFO"
+      CONNECT_LOG4J_LOGGERS: "org.apache.kafka.connect.runtime.rest=WARN,org.reflections=ERROR"
+      CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components"
+      CONNECT_PLUGIN_DISCOVERY: "only_scan"
+      CONNECT_REPLICATION_FACTOR: 1
+    ports:
+      - "8083:8083"
+    networks:
+      - kafka_network
+
 networks:
   kafka_network:
     driver: bridge
@@ -158,3 +236,5 @@ networks:
 volumes:
   scaler_data:
   training_data:
+  # Comment out or remove the next line:
+  # mongodb_data:

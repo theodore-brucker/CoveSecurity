@@ -7,7 +7,7 @@ WORKDIR /home/model-server
 USER root
 
 # Install curl
-RUN apt-get update && apt-get install -y curl
+RUN apt-get update
 
 # Copy the custom handler and any other necessary files
 COPY custom_handler.py /home/model-server/
@@ -23,6 +23,7 @@ RUN mkdir -p /home/model-server/checkpoints/
 COPY requirements.txt /home/model-server/
 COPY startup.sh /home/model-server/startup.sh
 
+RUN sed -i 's/\r$//' /home/model-server/startup.sh
 RUN chmod +x /home/model-server/startup.sh
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install torch-model-archiver
