@@ -147,7 +147,6 @@ def train_model_process():
         time.sleep(5)
         update_training_status("training", 50, "Training model")
         if train_and_set_inference_mode(data):
-            logging.info(f'{data}')
             update_training_status("completed", 100, "Model training completed and set to inference mode")
             threading.Thread(target=prediction_thread).start()
         else:
@@ -423,9 +422,9 @@ def prediction_thread():
                     }
                     logging.debug(f'Producing prediction for sequence {_id}: is_anomaly = {is_anomaly}, reconstruction_error = {reconstruction_error}')
                     
-                    logging.info(f"Producing processed data to topic '{PREDICTIONS_TOPIC}':")
-                    logging.info(f"Key: {_id}")
-                    logging.info(f"Value: {json.dumps(output, indent=2, cls=CustomEncoder)}")
+                    logging.debug(f"Producing processed data to topic '{PREDICTIONS_TOPIC}':")
+                    logging.debug(f"Key: {_id}")
+                    logging.debug(f"Value: {json.dumps(output, indent=2, cls=CustomEncoder)}")
 
                     producer.produce(
                         PREDICTIONS_TOPIC, 
@@ -460,7 +459,7 @@ def wait_for_model_ready():
 def query_model(data):
     url = f"{TORCHSERVE_REQUESTS_URL}/predictions/{MODEL_NAME}"
     
-    logging.info(f"Querying model with data: {data}")
+    logging.debug(f"Querying model with data: {data}")
     try:
         response = requests.post(url, json=data)
         response.raise_for_status()

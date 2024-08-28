@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { io } from "socket.io-client";
 import ResizableCard from './ResizableCard';
 import DataTable from './DataTable';
@@ -22,22 +22,23 @@ const Dashboard = () => {
     backend: { status: 'loading', last_update: null },
     raw: { status: 'Unknown', last_update: null },
     processed: { status: 'Unknown', last_update: null },
-    training: { status: 'Unknown', last_update: null },
     prediction: { status: 'Unknown', last_update: null }
   });
 
   const [allAnomalousSequences, setAllAnomalousSequences] = useState([]);
   const [displayedSequences, setDisplayedSequences] = useState([]);
   const [currentPage, setCurrentPage] = useState(1);
-  
   const [sequencesPerPage] = useState(5);
   const [selectedSequence, setSelectedSequence] = useState(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   
-  const anomalousSequencesRef = useRef([]);
-
   const [activeTab, setActiveTab] = useState('time');
   const [isMarkingNormal, setIsMarkingNormal] = useState(false);
+
+  const [mongoData, setMongoData] = useState([]);
+  const [isLoadingMongoData, setIsLoadingMongoData] = useState(false);
+  const [totalPages, setTotalPages] = useState(1);
+  const itemsPerPage = 10; // You can adjust this as needed
 
   // Utility functions
   const getStatusClass = (status) => {
@@ -123,19 +124,12 @@ const Dashboard = () => {
       const data = await response.json();
       console.log('Fetched anomalous sequences:', data);
 
-      // Only update if we have non-empty sequences
       if (data && Array.isArray(data.sequences) && data.sequences.length > 0) {
-        // Append the new sequences to the existing list
         setAllAnomalousSequences(prevSequences => {
           const updatedSequences = [...prevSequences, ...data.sequences];
-          updateDisplayedSequences(updatedSequences, 1); // Show first page after refresh
+          console.log('Updated state after refresh:', updatedSequences);
           return updatedSequences;
         });
-        anomalousSequencesRef.current = [
-          ...anomalousSequencesRef.current,
-          ...data.sequences
-        ];
-        console.log('Updated state after refresh:', anomalousSequencesRef.current);
       } else {
         console.log('No new sequences fetched, keeping existing sequences.');
       }
@@ -150,47 +144,37 @@ const Dashboard = () => {
     const startIndex = (page - 1) * sequencesPerPage;
     const endIndex = startIndex + sequencesPerPage;
     const newDisplayedSequences = sequences.slice(startIndex, endIndex);
-    console.log('Updating displayed sequences:', newDisplayedSequences);
     setDisplayedSequences(newDisplayedSequences);
   }, [sequencesPerPage]);
 
   const handleAnomalousSequencesUpdate = useCallback((data) => {
-    console.log('Received anomalous sequences update:', data);
-    console.log('Current sequences before update:', anomalousSequencesRef.current);
+    //console.log('Received anomalous sequences update:', data);
+    //console.log('Current sequences before update:', allAnomalousSequences);
 
     if (data && Array.isArray(data.sequences) && data.sequences.length > 0) {
-      // Append the new sequences to the existing list
       const updatedSequences = [
-        ...anomalousSequencesRef.current,
+        ...allAnomalousSequences,
         ...data.sequences
       ];
 
-      anomalousSequencesRef.current = updatedSequences;
       setAllAnomalousSequences(updatedSequences);
-      updateDisplayedSequences(updatedSequences, currentPage);
-
-      console.log('Updated sequences after emission:', updatedSequences);
+      //console.log('Updated sequences after emission:', updatedSequences);
     } else {
-      console.log('Received an empty or invalid update, no changes made.');
+      //console.log('Received an empty or invalid update, no changes made.');
     }
-  }, [currentPage, updateDisplayedSequences]);
+  }, [allAnomalousSequences]);
+
+  useEffect(() => {
+    updateDisplayedSequences(allAnomalousSequences, currentPage);
+  }, [allAnomalousSequences, currentPage, updateDisplayedSequences]);
 
   const handlePreviousPage = useCallback(() => {
-    if (currentPage > 1) {
-      const newPage = currentPage - 1;
-      setCurrentPage(newPage);
-      updateDisplayedSequences(allAnomalousSequences, newPage);
-    }
-  }, [currentPage, allAnomalousSequences, updateDisplayedSequences]);
+    setCurrentPage(prev => Math.max(prev - 1, 1));
+  }, []);
 
   const handleNextPage = useCallback(() => {
-    const maxPage = Math.ceil(allAnomalousSequences.length / sequencesPerPage);
-    if (currentPage < maxPage) {
-      const newPage = currentPage + 1;
-      setCurrentPage(newPage);
-      updateDisplayedSequences(allAnomalousSequences, newPage);
-    }
-  }, [currentPage, allAnomalousSequences, sequencesPerPage, updateDisplayedSequences]);
+    setCurrentPage(prev => Math.min(prev + 1, totalPages));
+  }, [totalPages]);
 
   const handleMarkAsNormal = async (sequenceId) => {
     setIsMarkingNormal(true);
@@ -219,6 +203,43 @@ const Dashboard = () => {
     }
   };
 
+  const fetchMongoData = useCallback(async (page = currentPage) => {
+    setIsLoadingMongoData(true);
+    try {
+      console.log('Fetching data with params:', {
+        start_date: startDate,
+        end_date: endDate,
+        page: page,
+        per_page: itemsPerPage
+      });
+      const response = await axios.get('http://localhost:5000/api/data', {
+        params: {
+          start_date: startDate,
+          end_date: endDate,
+          page: page,
+          per_page: itemsPerPage
+        }
+      });
+      console.log('Received data:', response.data);
+      setMongoData(response.data.data);
+      setTotalPages(response.data.total_pages);
+    } catch (error) {
+      console.error('Error fetching MongoDB data:', error);
+    } finally {
+      setIsLoadingMongoData(false);
+    }
+  }, [startDate, endDate, itemsPerPage, currentPage]);
+
+  useEffect(() => {
+    fetchMongoData(currentPage);
+  }, [fetchMongoData, currentPage]);
+
+  const applyFilter = useCallback(() => {
+    console.log('Applying filter with dates:', startDate, endDate);
+    setCurrentPage(1);
+    fetchMongoData(1);
+  }, [fetchMongoData, startDate, endDate]);
+
   useEffect(() => {
     const newSocket = io("http://localhost:5000", {
       transports: ["websocket"],
@@ -233,7 +254,7 @@ const Dashboard = () => {
     newSocket.on("processed_sample_update", setProcessedSample);
     newSocket.on("anomaly_numbers_update", setAnomalyNumbers);
     newSocket.on("training_status_update", (status) => {
-      console.log("Received training status update:", status);
+      //console.log("Received training status update:", status);
       setTrainingStatus(status);
     });
     newSocket.on("anomalous_sequences_update", handleAnomalousSequencesUpdate);
@@ -402,16 +423,14 @@ const Dashboard = () => {
                 <tr>
                   <th>Sequence ID</th>
                   <th>Reconstruction Error</th>
-                  <th>Is Anomaly</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {displayedSequences.map((sequence) => (
                   <tr key={sequence.id}>
-                    <td onClick={() => setSelectedSequence(sequence)} style={{cursor: 'pointer'}}>{sequence.id}</td>
+                    <td onClick={() => setSelectedSequence(sequence)} style={{cursor: 'pointer'}}>{sequence._id}</td>
                     <td>{sequence.reconstruction_error.toFixed(4)}</td>
-                    <td>{sequence.is_anomaly ? 'Yes' : 'No'}</td>
                     <td>
                       <button 
                         className="themed_button mark-as-normal-button" 
@@ -432,6 +451,63 @@ const Dashboard = () => {
             </div>
             <button className="refresh-button" onClick={handleRefreshAnomalousSequences}>Refresh Data</button>
           </div>
+        )}
+      </ResizableCard>
+    </div>
+  );
+
+  const renderMongoDataCard = () => (
+    <div key="mongoData" className="dashboard-item">
+      <ResizableCard title="MongoDB Data Sample">
+        <div className="date-selection">
+          <label>
+            Start Date:
+            <input 
+              type="datetime-local" 
+              value={startDate} 
+              onChange={(e) => setStartDate(e.target.value)} 
+            />
+          </label>
+          <label>
+            End Date:
+            <input 
+              type="datetime-local" 
+              value={endDate} 
+              onChange={(e) => setEndDate(e.target.value)} 
+            />
+          </label>
+          <button className="themed_button" onClick={applyFilter}>
+            Apply Filter
+          </button>
+        </div>
+        {isLoadingMongoData ? (
+          <p className="loading">Loading MongoDB data...</p>
+        ) : mongoData.length > 0 ? (
+          <>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Timestamp</th>
+                </tr>
+              </thead>
+              <tbody>
+                {mongoData.map((item, index) => (
+                  <tr key={index}>
+                    <td>{item._id}</td>
+                    <td>{new Date(item.timestamp.$date).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="pagination-controls">
+              <button onClick={handlePreviousPage} disabled={currentPage === 1}>Previous</button>
+              <span>Page {currentPage} of {totalPages}</span>
+              <button onClick={handleNextPage} disabled={currentPage === totalPages}>Next</button>
+            </div>
+          </>
+        ) : (
+          <p>No data available</p>
         )}
       </ResizableCard>
     </div>
@@ -500,8 +576,7 @@ const Dashboard = () => {
           renderAnomalyNumbersCard(),
           renderAnomalousSequencesCard(),
           renderDataFlowHealthCard(),
-          renderRawSampleCard(),
-          renderProcessedSampleCard()
+          renderMongoDataCard()
         ]}
       </div>
     </div>

@@ -11,7 +11,8 @@
     "value.converter": "org.apache.kafka.connect.json.JsonConverter",
     "value.converter.schemas.enable": "false",
     "document.id.strategy": "com.mongodb.kafka.connect.sink.processor.id.strategy.UuidStrategy",
-    "writemodel.strategy": "com.mongodb.kafka.connect.sink.writemodel.strategy.ReplaceOneDefaultStrategy",
+    "document.id.strategy.overwrite.existing": "true",
+    "writemodel.strategy": "com.mongodb.kafka.connect.sink.writemodel.strategy.UpdateOneDefaultStrategy",
     "delete.on.null.values": false,
     "max.batch.size": "0",
     "errors.tolerance": "all",
@@ -25,6 +26,7 @@
     "transforms.convertTimestamp.type": "org.apache.kafka.connect.transforms.TimestampConverter$Value",
     "transforms.convertTimestamp.target.type": "Timestamp",
     "transforms.convertTimestamp.field": "timestamp",
-    "transforms.convertTimestamp.format": "yyyy-MM-dd'T'HH:mm:ss.SSSXXX"
+    "transforms.convertTimestamp.format": "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+    "updateone.business.key": "_id"
   }
 }

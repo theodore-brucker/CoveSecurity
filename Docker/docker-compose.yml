@@ -198,7 +198,7 @@ services:
         confluent-hub install --no-prompt mongodb/kafka-connect-mongodb:latest
         /etc/confluent/docker/run &
         echo "Waiting for Kafka Connect to start..."
-        sleep 45
+        sleep 35
         echo "Listing installed plugins:"
         ls -R /usr/share/java /usr/share/confluent-hub-components
         echo "Attempting to create connector:"

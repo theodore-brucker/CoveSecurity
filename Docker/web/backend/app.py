@@ -14,6 +14,9 @@ import requests
 import json
 from flask_socketio import SocketIO
 from werkzeug.utils import secure_filename
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError, ConfigurationError
+from bson import json_util, ObjectId
 
 # ENVIRONMENT VARIABLES
 KAFKA_BROKER = os.getenv('KAFKA_BROKER', 'kafka:9092')
@@ -32,6 +35,15 @@ ALLOWED_EXTENSIONS = {'pcap'}
 SEQUENCE_LENGTH = int(os.getenv('SEQUENCE_LENGTH', '16'))
 FEATURE_COUNT = int(os.getenv('FEATURE_COUNT', '12'))
 
+MONGO_URI = os.getenv('MONGO_URI', "mongodb://mongodb:27017/")
+DB_NAME = "network_sequences"
+try:
+    mongo_client = MongoClient(MONGO_URI)
+    db = mongo_client[DB_NAME]
+    sequences_collection = db.sequences
+except ConfigurationError as e:
+    logging.error(f"MongoDB configuration error: {e}")
+    exit(1)
 
 # GLOBAL VARIABLES
 last_raw_data_time = None
@@ -196,6 +208,22 @@ def delivery_report(err, msg):
     else:
         logging.info(f'Message delivered to {msg.topic()} [{msg.partition()}]')
 
+def check_mongo_connection():
+    try:
+        # Attempt to fetch server info
+        mongo_client.server_info()
+        # Check if we can access the collection
+        sequences_collection.find_one()
+        logging.info("MongoDB connection successful")
+        return True
+    except ConnectionFailure:
+        logging.error("MongoDB connection failed")
+    except ServerSelectionTimeoutError:
+        logging.error("MongoDB server selection timeout")
+    except Exception as e:
+        logging.error(f"Unexpected error when connecting to MongoDB: {str(e)}")
+    return False
+
 ##########################################
 # HANDLERS
 ##########################################
@@ -265,37 +293,6 @@ def training_data():
     except requests.RequestException as e:
         return jsonify({"error": f"Error communicating with data processing service: {str(e)}"}), 500
 
-def emit_job_status(job_id=None):
-    with app.app_context():
-        while True:
-            try:
-                if job_id:
-                    response = requests.get(f'{DATA_PROCESSING_URL}/status/{job_id}')
-                    event_name = 'job_status_update'
-                else:
-                    response = requests.get(f'{DATA_PROCESSING_URL}/status')
-                    event_name = 'training_status_update'
-                
-                if response.status_code == 200:
-                    status = response.json()
-                    socketio.emit(event_name, status)
-                    if status['status'] in ['completed', 'error']:
-                        break
-                else:
-                    socketio.emit(event_name, {
-                        "status": "error",
-                        "message": "Failed to fetch status",
-                        "job_id": job_id
-                    })
-                    break
-            except requests.RequestException as e:
-                socketio.emit(event_name, {
-                    "status": "error",
-                    "message": f"Error fetching status: {str(e)}",
-                    "job_id": job_id
-                })
-                break
-            socketio.sleep(5)  # Check status every 5 seconds
 
 @app.route('/model_status', methods=['GET'])
 def get_model_status():
@@ -363,6 +360,54 @@ def train_with_labeled_data():
             return jsonify({"error": "Failed to initiate training"}), 500
     except requests.RequestException as e:
         return jsonify({"error": f"Error initiating training: {str(e)}"}), 500
+
+@app.route('/api/data', methods=['GET'])
+def get_data():
+    try:
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        page = int(request.args.get('page', 1))
+        per_page = int(request.args.get('per_page', 10))
+
+        logging.debug(f"Received request with params: start_date={start_date}, end_date={end_date}, page={page}, per_page={per_page}")
+
+        query = {}
+        if start_date and end_date:
+            start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            # Add a day to the end date to include the entire last day
+            end = end + timedelta(days=1)
+            
+            # Convert to string format matching the database
+            start_str = start.strftime("%m/%d/%Y, %I:%M:%S %p")
+            end_str = end.strftime("%m/%d/%Y, %I:%M:%S %p")
+            
+            query['timestamp'] = {'$gte': start_str, '$lt': end_str}
+
+        logging.debug(f"Constructed query: {query}")
+
+        total_count = sequences_collection.count_documents(query)
+        logging.debug(f"Total documents matching query: {total_count}")
+
+        total_pages = (total_count + per_page - 1) // per_page
+
+        data = list(sequences_collection.find(query, {'_id': 1, 'timestamp': 1})
+                    .skip((page - 1) * per_page)
+                    .limit(per_page))
+
+        logging.debug(f"Retrieved {len(data)} documents")
+
+        response_data = {
+            'data': json.loads(json_util.dumps(data)),
+            'total_pages': total_pages,
+            'current_page': page
+        }
+        logging.debug(f"Sending response: {response_data}")
+
+        return jsonify(response_data)
+    except Exception as e:
+        logging.error(f"Error querying MongoDB: {e}", exc_info=True)
+        return jsonify({"error": "Failed to retrieve data"}), 500
 
 ##########################################
 # GETTERS
@@ -502,7 +547,7 @@ def get_data_flow_health():
     return {
         "raw": {"status": raw_status, "last_update": raw_time},
         "processed": {"status": processed_status, "last_update": processed_time},
-        "training": {"status": training_data_status, "last_update": training_data_time},
+        #"training": {"status": training_data_status, "last_update": training_data_time},
         "prediction": {"status": prediction_status, "last_update": prediction_time},
         "backend": {"status": "healthy", "last_update": current_time.isoformat()}
     }
@@ -510,6 +555,38 @@ def get_data_flow_health():
 ##########################################
 # EMITTERS
 ##########################################
+
+def emit_job_status(job_id=None):
+    with app.app_context():
+        while True:
+            try:
+                if job_id:
+                    response = requests.get(f'{DATA_PROCESSING_URL}/status/{job_id}')
+                    event_name = 'job_status_update'
+                else:
+                    response = requests.get(f'{DATA_PROCESSING_URL}/status')
+                    event_name = 'training_status_update'
+                
+                if response.status_code == 200:
+                    status = response.json()
+                    socketio.emit(event_name, status)
+                    if status['status'] in ['completed', 'error']:
+                        break
+                else:
+                    socketio.emit(event_name, {
+                        "status": "error",
+                        "message": "Failed to fetch status",
+                        "job_id": job_id
+                    })
+                    break
+            except requests.RequestException as e:
+                socketio.emit(event_name, {
+                    "status": "error",
+                    "message": f"Error fetching status: {str(e)}",
+                    "job_id": job_id
+                })
+                break
+            socketio.sleep(5)  # Check status every 5 seconds
 
 def emit_anomalous_sequences():
     with app.app_context():
@@ -542,7 +619,7 @@ def emit_raw_sample():
                 if sample:
                     socketio.emit('raw_sample_update', {
                         '_id': sample['_id'],
-                        'timestamp': sample['timestamp'],
+                        'timestamp': str(sample['timestamp']),
                         'sequence': sample['sequence'],
                         'human_readable': sample['human_readable']
                     })
@@ -558,7 +635,7 @@ def emit_processed_sample():
                 if sample:
                     socketio.emit('processed_sample_update', {
                         '_id': sample['_id'],
-                        'timestamp': sample['timestamp'],
+                        'timestamp': str(sample['timestamp']),
                         'sequence': sample['sequence'],
                         'human_readable': sample['human_readable']
                     })
@@ -574,7 +651,7 @@ def emit_training_sample():
                 if sample:
                     socketio.emit('processed_training_update', {
                         '_id': sample['_id'],
-                        'timestamp': sample['timestamp'],
+                        'timestamp': str(sample['timestamp']),
                         'sequence': sample['sequence'],
                         'human_readable': sample['human_readable']
                     })
@@ -608,7 +685,6 @@ def emit_data_flow_health():
 # MAIN
 ##########################################
 
-
 if __name__ == '__main__':
     port = int(os.getenv('PORT', '5000'))
     logging.info(f"MLSEC web backend engine starting on 0.0.0.0:{port}")
@@ -620,4 +696,9 @@ if __name__ == '__main__':
     else:
         logging.info("Required Kafka topics are up")
     
-    socketio.run(app, debug=True, host='0.0.0.0', port=port, allow_unsafe_werkzeug=True)
+    # Check MongoDB connection
+    if check_mongo_connection():
+        socketio.run(app, host='0.0.0.0', port=port, allow_unsafe_werkzeug=True)
+    else:
+        logging.error("Failed to connect to MongoDB. Exiting.")
+        exit(1)

@@ -160,7 +160,7 @@ class SequenceAnomalyDetector(BaseHandler):
         first_batch = next(iter(dataloader))
         logger.info(f"First batch type: {type(first_batch)}")
         logger.info(f"First batch shape: {first_batch.shape}")
-        logger.info(f"First two items of first batch: {first_batch[:2]}")
+        logger.debug(f"First two items of first batch: {first_batch[:2]}")
         
         return dataloader
 
