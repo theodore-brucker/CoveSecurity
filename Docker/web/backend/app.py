@@ -59,6 +59,12 @@ anomalous_predictions = 0
 anomalous_sequences = []
 logging.basicConfig(level=logging.INFO)
 
+training_status = {
+    'status': 'idle',
+    'progress': 0,
+    'message': 'Waiting to start...'
+}
+
 ##########################################
 # PCAP UPLOADER
 ##########################################
@@ -230,6 +236,12 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 ##########################################
 
 
+def update_training_status(new_status):
+    global training_status
+    training_status.update(new_status)
+    logging.info(f"Training status updated: {training_status}")
+    socketio.emit('training_status_update', training_status)
+
 anomalous_sequences = []  # In-memory storage for anomalous sequences
 
 @socketio.on('anomalous_sequences_update')
@@ -282,6 +294,7 @@ def get_mongodb_data():
 @socketio.on('connect')
 def handle_connect():
     logging.info("Client connected")
+    socketio.emit('training_status_update', training_status)
     threading.Thread(target=emit_health_status).start()
     threading.Thread(target=emit_raw_sample).start()
     threading.Thread(target=emit_processed_sample).start()
@@ -294,10 +307,27 @@ def start_training():
     try:
         response = requests.post(f'{DATA_PROCESSING_URL}/training_start')
         if response.status_code == 200:
+            update_training_status({
+                'status': 'in_progress',
+                'progress': 0,
+                'message': 'Training job started.'
+            })
+            job_id = response.json().get('job_id')
+            threading.Thread(target=emit_job_status, args=(job_id,)).start()
             return jsonify({"message": "Training job started"}), 200
         else:
+            update_training_status({
+                'status': 'error',
+                'progress': 0,
+                'message': 'Failed to start training job.'
+            })
             return jsonify({"error": "Failed to start training job"}), 500
     except requests.RequestException as e:
+        update_training_status({
+            'status': 'error',
+            'progress': 0,
+            'message': f'Error communicating with data processing service: {str(e)}'
+        })
         return jsonify({"error": f"Error communicating with data processing service: {str(e)}"}), 500
 
 @app.route('/training_data', methods=['POST'])
@@ -349,7 +379,9 @@ def get_model_status():
     try:
         response = requests.get(f'{DATA_PROCESSING_URL}/status')
         if response.status_code == 200:
-            return jsonify(response.json())
+            status = response.json()
+            update_training_status(status)
+            return jsonify(status)
         else:
             return jsonify({"status": "error", "message": "Failed to fetch status"}), 500
     except requests.RequestException as e:
@@ -610,9 +642,10 @@ def emit_job_status(job_id=None):
                 else:
                     response = requests.get(f'{DATA_PROCESSING_URL}/status')
                     event_name = 'training_status_update'
-                
+
                 if response.status_code == 200:
                     status = response.json()
+                    update_training_status(status)
                     socketio.emit(event_name, status)
                     if status['status'] in ['completed', 'error']:
                         break
@@ -630,7 +663,7 @@ def emit_job_status(job_id=None):
                     "job_id": job_id
                 })
                 break
-            socketio.sleep(5)  # Check status every 5 seconds
+            socketio.sleep(2)  # Check status every 5 seconds
 
 def emit_anomalous_sequences():
     with app.app_context():
