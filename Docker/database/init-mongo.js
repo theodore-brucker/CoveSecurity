@@ -1,5 +1,12 @@
+// Switch to the network_sequences database
 db = db.getSiblingDB('network_sequences');
 
+// Drop the existing database if it exists
+db.dropDatabase();
+
+// The database will be automatically recreated when we start using it
+
+// Create the sequences collection with validation
 db.createCollection('sequences', {
   validator: {
     $jsonSchema: {
@@ -39,4 +46,5 @@ db.createCollection('sequences', {
   validationLevel: "moderate"
 });
 
+// Create the index
 db.sequences.createIndex({ timestamp: 1 });

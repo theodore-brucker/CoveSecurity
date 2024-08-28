@@ -160,9 +160,26 @@ services:
       - "27017:27017"
     volumes:
       - ./database/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
-      - mongodb_data:/data/db
+      # Comment out or remove the next line:
+      # - mongodb_data:/data/db
     networks:
       - kafka_network
+
+  mongo-express:
+    image: mongo-express
+    ports:
+      - "28081:8081"
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://mongodb:27017/admin
+      ME_CONFIG_BASICAUTH_USERNAME: root
+      ME_CONFIG_BASICAUTH_PASSWORD: example
+    networks:
+      - kafka_network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - mongodb
+    restart: always
 
   kafka-connect:
     image: confluentinc/cp-kafka-connect:latest
@@ -212,22 +229,6 @@ services:
     networks:
       - kafka_network
 
-  mongo-express:
-    image: mongo-express
-    ports:
-      - "28081:8081"
-    environment:
-      ME_CONFIG_MONGODB_URL: mongodb://mongodb:27017/admin
-      ME_CONFIG_BASICAUTH_USERNAME: root
-      ME_CONFIG_BASICAUTH_PASSWORD: example
-    networks:
-      - kafka_network
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      - mongodb
-    restart: always
-
 networks:
   kafka_network:
     driver: bridge
@@ -235,4 +236,5 @@ networks:
 volumes:
   scaler_data:
   training_data:
-  mongodb_data:
+  # Comment out or remove the next line:
+  # mongodb_data:

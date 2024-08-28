@@ -1,17 +1,13 @@
-from decimal import Decimal
 import json
 import logging
 import os
-import threading
 import time
 import uuid
-import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 from ts.torch_handler.base_handler import BaseHandler
 from torch.optim.lr_scheduler import ExponentialLR
 from transformer_autoencoder import TransformerAutoencoder
-from confluent_kafka import Consumer, KafkaException, Producer
 from datetime import datetime
 
 KAFKA_BROKER = os.getenv('KAFKA_BROKER', 'kafka:9092')
@@ -23,63 +19,6 @@ ANOMALY_THRESHOLD = float(os.getenv('ANOMALY_THRESHOLD', 1))
 SEQUENCE_LENGTH = int(os.getenv('SEQUENCE_LENGTH', 16))
 FEATURE_COUNT = int(os.getenv('FEATURE_COUNT', 12))
 MODEL_STORE_PATH = os.getenv('MODEL_STORE_PATH', '/home/model-server/model-store/')
-
-
-class ProducerManager:
-    def __init__(self):
-        self.producers = {}
-        self.lock = threading.Lock()
-
-    def get_producer(self, topic):
-        with self.lock:
-            if topic not in self.producers:
-                config = producer_config.copy()
-                config['client.id'] = f'producer-{topic}'
-                try:
-                    self.producers[topic] = Producer(config)
-                    logging.info(f"Successfully created producer for topic: {topic}")
-                except KafkaException as e:
-                    logging.error(f"Failed to create producer for topic {topic}: {e}")
-                    raise
-            return self.producers[topic]
-    
-producer_config = {
-    'bootstrap.servers': KAFKA_BROKER,
-    'client.dns.lookup': 'use_all_dns_ips',
-    'broker.address.family': 'v4'
-}
-
-producer_manager = ProducerManager(KAFKA_BROKER)
-
-from scapy.fields import EDecimal
-
-class CustomEncoder(json.JSONEncoder):
-    def default(self, obj):
-        try:
-            if obj is None:
-                return None
-            elif isinstance(obj, (Decimal, EDecimal)):
-                return str(obj)
-            elif isinstance(obj, bytes):
-                return obj.decode('utf-8', errors='replace')
-            elif isinstance(obj, np.ndarray):
-                return obj.tolist()
-            elif isinstance(obj, (np.integer, np.floating)):
-                return obj.item()
-            elif isinstance(obj, datetime):
-                return obj.isoformat()
-            elif isinstance(obj, complex):
-                return [obj.real, obj.imag]
-            elif isinstance(obj, set):
-                return list(obj)
-            elif isinstance(obj, uuid.UUID):
-                return str(obj)
-            elif hasattr(obj, '__str__'):
-                return str(obj)
-            return super(CustomEncoder, self).default(obj)
-        except Exception as e:
-            logging.error(f"Error in CustomEncoder: {e} for object type {type(obj)}", exc_info=True)
-            return str(obj)  # Fall back to string representation
 
 class SequenceAnomalyDetector(BaseHandler):
     def __init__(self):
@@ -117,7 +56,7 @@ class SequenceAnomalyDetector(BaseHandler):
 
         self.load_model_version('latest')
         self.initialized = True
-        logger.info("SequencecAnomalyDetector initialization completed")
+        logger.info("SequenceAnomalyDetector initialization completed")
 
     def load_latest_weights(self):
         if not self.model_dir:
@@ -144,44 +83,62 @@ class SequenceAnomalyDetector(BaseHandler):
 
     def inference(self, dataloader):
         logger.debug("Starting inference")
+        logger.info(f"Inference DataLoader type: {type(dataloader)}")
+        logger.info(f"Inference DataLoader's dataset type: {type(dataloader.dataset)}")
+        logger.info(f"Inference DataLoader size: {len(dataloader.dataset)}")
+        
+        if hasattr(dataloader.dataset, 'shape'):
+            logger.info(f"Inference DataLoader dataset shape: {dataloader.dataset.shape}")
+        else:
+            logger.info("Inference DataLoader's dataset does not have a shape attribute")
+        
+        # Debug first batch
+        first_batch = next(iter(dataloader))
+        logger.info(f"First inference batch type: {type(first_batch)}")
+        logger.info(f"First inference batch shape: {first_batch.shape}")
+        
         self.model.eval()
         results = []
         with torch.no_grad():
-            for batch in dataloader:
-                batch = batch[0].to(self.device)
-                output, _ = self.model(batch)
-                anomaly_scores, _ = self.model.compute_anomaly_score(batch)
-                results.extend(zip(batch.cpu().numpy(), output.cpu().numpy(), anomaly_scores.cpu().numpy()))
-        logger.debug(f"Inference completed. Total sequences processed: {len(results)}")
+            for data in dataloader:
+                data = data.to(self.device)
+                output, _ = self.model(data)
+                anomaly_scores, _ = self.model.compute_anomaly_score(data)
+                results.extend(zip(data.cpu().numpy(), output.cpu().numpy(), anomaly_scores.cpu().numpy()))
+        
+        logger.info(f"Inference completed. Total sequences processed: {len(results)}")
         return results
 
     def preprocess(self, data):
         logger.debug("Starting preprocessing")
-        logger.debug(f'Data type before processing: {type(data)}, Content: {data[:100]}')  # Log only the first 100 characters to avoid overwhelming logs
+        logger.debug(f'Data type before processing: {type(data)}, Content: {data[:100]}')
         
-        if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
-            if 'body' in data[0]:
-                # Training data format from TorchServe
-                body = data[0]['body']
-                if isinstance(body, str):
-                    sequences = json.loads(body)
-                elif isinstance(body, dict):
-                    sequences = body.get('data', [])  # Assuming 'data' key contains the sequences
+        if isinstance(data, list) and len(data) > 0:
+            if isinstance(data[0], dict):
+                if 'body' in data[0]:
+                    body = data[0]['body']
+                    if isinstance(body, str):
+                        sequences = json.loads(body)
+                    elif isinstance(body, dict):
+                        sequences = body.get('data', [])
+                    else:
+                        sequences = body
+                elif 'sequence' in data[0]:
+                    sequences = [item['sequence'] for item in data]
                 else:
-                    sequences = body  # Assume it's already the list of sequences
-            elif 'sequence' in data[0]:
-                # Direct sequence data format
-                sequences = [item['sequence'] for item in data]
+                    logger.error("Unexpected data format")
+                    raise ValueError("Input data must be in the correct format")
+            elif isinstance(data[0], list):
+                sequences = data
             else:
-                logger.error("Unexpected data format")
+                logger.error("Invalid input data format")
                 raise ValueError("Input data must be in the correct format")
-        elif isinstance(data, list) and isinstance(data[0], list):
-            sequences = data  # Treat it as a list of sequences
         else:
             logger.error("Invalid input data format")
             raise ValueError("Input data must be in the correct format")
 
         logging.debug(f"Sample of sequences: {sequences[:2]}")
+        
         # Convert data to tensor
         tensor_data = torch.tensor(sequences, dtype=torch.float32)
         
@@ -192,50 +149,35 @@ class SequenceAnomalyDetector(BaseHandler):
             logger.error(f"Invalid input shape: {tensor_data.shape}")
             raise ValueError(f"Each sequence must have shape ({self.sequence_length}, {self.feature_dim})")
 
-        dataset = TensorDataset(tensor_data)
-        batch_size = 1 if len(dataset) == 1 else 32
-        dataloader = DataLoader(dataset, batch_size, shuffle=False)
+        batch_size = 1 if tensor_data.size(0) == 1 else 32
+        dataloader = DataLoader(tensor_data, batch_size=batch_size, shuffle=False)
         
-        logger.info(f"Preprocessing completed. DataSet size: {len(dataset)}, DataLoader batches: {len(dataloader)}")
+        logger.info(f"Preprocessing completed. DataSet size: {tensor_data.size(0)}, DataLoader batches: {len(dataloader)}")
+        logger.info(f"DataLoader dataset type: {type(dataloader.dataset)}")
+        logger.info(f"DataLoader dataset shape: {dataloader.dataset.shape}")
+        
+        # Debug first batch
+        first_batch = next(iter(dataloader))
+        logger.info(f"First batch type: {type(first_batch)}")
+        logger.info(f"First batch shape: {first_batch.shape}")
+        logger.info(f"First two items of first batch: {first_batch[:2]}")
+        
         return dataloader
 
     def postprocess(self, inference_outputs):
         logger.info("Starting postprocessing")
         anomaly_results = []
 
-        producer = producer_manager.get_producer(PREDICTION_TOPIC)
-
-        for i, (original, reconstructed, anomaly_score) in enumerate(inference_outputs):
+        for original, reconstructed, anomaly_score in inference_outputs:
             is_anomaly = float(anomaly_score) >= float(self.anomaly_threshold)
             
-            _id = original['_id']
-            update_data = {
-                "timestamp": datetime.now(),  # Current timestamp as float
-                "sequence": original.get('sequence', None),  # Use original sequence if available
-                "is_training": False,  # This is not a training instance
-                "human_readable": original.get('human_readable', None),  # Use original human_readable if available
-                "is_anomaly": is_anomaly,
+            anomaly_results.append({
                 "reconstruction_error": float(anomaly_score),
-                "is_false_positive": None  # This field is not in the schema, consider removing or adding to schema
-            }
-            
-            try:
-                producer.produce(
-                    PREDICTION_TOPIC,
-                    key=str(_id),
-                    value=json.dumps(update_data, cls=CustomEncoder),
-                    on_delivery=self.delivery_report
-                )
+                "is_anomaly": is_anomaly,
+                "timestamp": datetime.now().isoformat(),
+                "sequence": original.tolist(),
+            })
 
-                anomaly_results.append({
-                    "_id": _id,
-                    "reconstruction_error": float(anomaly_score),
-                    "is_anomaly": is_anomaly
-                })
-            except Exception as e:
-                logger.error(f"Error producing message for sequence {_id}: {e}")
-
-        producer.flush()
         logger.info(f"Postprocessing completed. Processed {len(anomaly_results)} sequences")
         return anomaly_results
 
@@ -281,7 +223,7 @@ class SequenceAnomalyDetector(BaseHandler):
 
         with torch.no_grad():
             for inputs in val_dataloader:
-                inputs = inputs[0].to(self.device)
+                inputs = inputs.to(self.device)
                 outputs, _ = self.model(inputs)
                 recon_error = self.model.compute_batch_error((outputs, None), inputs)
                 reconstruction_errors.extend(recon_error.cpu().numpy())
@@ -316,6 +258,13 @@ class SequenceAnomalyDetector(BaseHandler):
         scheduler = ExponentialLR(self.optimizer, gamma=0.95)
         
         dataloader = self.preprocess(data)
+        logger.info(f"Training DataLoader dataset type: {type(dataloader.dataset)}")
+        logger.info(f"Training DataLoader dataset shape: {dataloader.dataset.shape}")
+        
+        # Debug first batch
+        first_batch = next(iter(dataloader))
+        logger.info(f"First training batch type: {type(first_batch)}")
+        logger.info(f"First training batch shape: {first_batch.shape}")
 
         # Split data into training and validation sets
         train_size = int(0.8 * len(dataloader.dataset))
@@ -323,6 +272,16 @@ class SequenceAnomalyDetector(BaseHandler):
         train_dataset, val_dataset = torch.utils.data.random_split(dataloader.dataset, [train_size, val_size])
         train_dataloader = DataLoader(train_dataset, batch_size=dataloader.batch_size, shuffle=True)
         val_dataloader = DataLoader(val_dataset, batch_size=dataloader.batch_size, shuffle=False)
+        
+        logger.info(f"Train dataset type: {type(train_dataset)}")
+        logger.info(f"Train dataset's underlying dataset type: {type(train_dataset.dataset)}")
+        logger.info(f"Train dataset's underlying dataset shape: {train_dataset.dataset.shape}")
+        logger.info(f"Train dataset size: {len(train_dataset)}")
+        
+        logger.info(f"Validation dataset type: {type(val_dataset)}")
+        logger.info(f"Validation dataset's underlying dataset type: {type(val_dataset.dataset)}")
+        logger.info(f"Validation dataset's underlying dataset shape: {val_dataset.dataset.shape}")
+        logger.info(f"Validation dataset size: {len(val_dataset)}")
         
         best_val_loss = float('inf')
         patience = 5
@@ -334,7 +293,7 @@ class SequenceAnomalyDetector(BaseHandler):
             num_batches = 0
 
             for batch in train_dataloader:
-                batch = batch[0].to(self.device)
+                batch = batch.to(self.device)
                 self.optimizer.zero_grad()
                 outputs, _ = self.model(batch)
                 loss = self.model.compute_loss((outputs, None), batch)
@@ -376,11 +335,26 @@ class SequenceAnomalyDetector(BaseHandler):
         return [json.dumps({"status": "success", "average_loss": average_epoch_loss, "best_val_loss": best_val_loss})]
 
     def validate(self, val_dataloader):
+        logger.info(f"Validation DataLoader type: {type(val_dataloader)}")
+        logger.info(f"Validation DataLoader's dataset type: {type(val_dataloader.dataset)}")
+        logger.info(f"Validation DataLoader size: {len(val_dataloader.dataset)}")
+        
+        if hasattr(val_dataloader.dataset, 'dataset'):
+            logger.info(f"Validation DataLoader's underlying dataset type: {type(val_dataloader.dataset.dataset)}")
+            logger.info(f"Validation DataLoader's underlying dataset shape: {val_dataloader.dataset.dataset.shape}")
+        else:
+            logger.info("Validation DataLoader's dataset does not have an underlying dataset attribute")
+        
+        # Debug first batch
+        first_batch = next(iter(val_dataloader))
+        logger.info(f"First validation batch type: {type(first_batch)}")
+        logger.info(f"First validation batch shape: {first_batch.shape}")
+        
         self.model.eval()
         total_loss = 0
         with torch.no_grad():
             for batch in val_dataloader:
-                batch = batch[0].to(self.device)
+                batch = batch.to(self.device)
                 outputs, _ = self.model(batch)
                 loss = self.model.compute_loss((outputs, None), batch)
                 total_loss += loss.item()

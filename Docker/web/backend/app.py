@@ -389,7 +389,7 @@ def get_anomalous_sequences():
         prediction = json.loads(msg.value().decode('utf-8'))
         if prediction.get('is_anomaly'):
             anomalous_sequences.append({
-                'id': prediction['id'],
+                '_id': prediction['_id'],
                 'reconstruction_error': prediction['reconstruction_error'],
                 'human_readable': prediction['human_readable']
             })
@@ -408,7 +408,7 @@ def get_raw_sample():
         logging.debug(f"Human readable features: {value.get('human_readable', {})}")
         if value and validate_data_size(value):
             return {
-                'id': value['id'],
+                '_id': value['_id'],
                 'timestamp': datetime.fromisoformat(value['timestamp']) if isinstance(value['timestamp'], str) else value['timestamp'],
                 'sequence': value['sequence'],
                 'human_readable': value.get('human_readable', {})
@@ -430,7 +430,7 @@ def get_processed_sample():
         logging.debug(f"Human readable features: {value.get('human_readable', {})}")
         if value and validate_data_size(value):
             return {
-                'id': value['id'],
+                '_id': value['_id'],
                 'timestamp': datetime.fromisoformat(value['timestamp']) if isinstance(value['timestamp'], str) else value['timestamp'],
                 'sequence': value['sequence'],
                 'human_readable': value.get('human_readable', {})  # Ensure human_readable is included
@@ -457,7 +457,7 @@ def get_training_sample():
             logging.debug(f"Human readable features: {value.get('human_readable', {})}")
             if value and validate_data_size(value):
                 return {
-                    'id': value['id'],
+                    '_id': value['_id'],
                     'timestamp': datetime.fromisoformat(value['timestamp']) if isinstance(value['timestamp'], str) else value['timestamp'],
                     'sequence': value['sequence'],
                     'human_readable': value['human_readable']
@@ -541,7 +541,7 @@ def emit_raw_sample():
                 sample = get_raw_sample()
                 if sample:
                     socketio.emit('raw_sample_update', {
-                        'id': sample['id'],
+                        '_id': sample['_id'],
                         'timestamp': sample['timestamp'],
                         'sequence': sample['sequence'],
                         'human_readable': sample['human_readable']
@@ -557,7 +557,7 @@ def emit_processed_sample():
                 sample = get_processed_sample()
                 if sample:
                     socketio.emit('processed_sample_update', {
-                        'id': sample['id'],
+                        '_id': sample['_id'],
                         'timestamp': sample['timestamp'],
                         'sequence': sample['sequence'],
                         'human_readable': sample['human_readable']
@@ -573,7 +573,7 @@ def emit_training_sample():
                 sample = get_training_sample()
                 if sample:
                     socketio.emit('processed_training_update', {
-                        'id': sample['id'],
+                        '_id': sample['_id'],
                         'timestamp': sample['timestamp'],
                         'sequence': sample['sequence'],
                         'human_readable': sample['human_readable']
