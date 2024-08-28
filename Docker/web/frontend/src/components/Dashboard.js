@@ -4,6 +4,8 @@ import ResizableCard from './ResizableCard';
 import DataTable from './DataTable';
 import logo from './Expanded-Cove-Logo.jpg';
 import axios from 'axios';
+import AnomalousSequencesCard from './AnomalousSequencesCard';
+import MongoDataCard from './MongoDataCard';
 
 const Dashboard = () => {
   // State variables
@@ -206,23 +208,19 @@ const Dashboard = () => {
   const fetchMongoData = useCallback(async (page = currentPage) => {
     setIsLoadingMongoData(true);
     try {
-      console.log('Fetching data with params:', {
-        start_date: startDate,
-        end_date: endDate,
+      const params = {
         page: page,
         per_page: itemsPerPage
-      });
-      const response = await axios.get('http://localhost:5000/api/data', {
-        params: {
-          start_date: startDate,
-          end_date: endDate,
-          page: page,
-          per_page: itemsPerPage
-        }
-      });
+      };
+      if (startDate) params.start_date = startDate;
+      if (endDate) params.end_date = endDate;
+
+      console.log('Fetching data with params:', params);
+      const response = await axios.get('http://localhost:5000/api/data', { params });
       console.log('Received data:', response.data);
       setMongoData(response.data.data);
       setTotalPages(response.data.total_pages);
+      setCurrentPage(response.data.current_page);
     } catch (error) {
       console.error('Error fetching MongoDB data:', error);
     } finally {
@@ -233,12 +231,6 @@ const Dashboard = () => {
   useEffect(() => {
     fetchMongoData(currentPage);
   }, [fetchMongoData, currentPage]);
-
-  const applyFilter = useCallback(() => {
-    console.log('Applying filter with dates:', startDate, endDate);
-    setCurrentPage(1);
-    fetchMongoData(1);
-  }, [fetchMongoData, startDate, endDate]);
 
   useEffect(() => {
     const newSocket = io("http://localhost:5000", {
@@ -408,144 +400,6 @@ const Dashboard = () => {
     </div>
   );
 
-  const renderAnomalousSequencesCard = () => (
-    <div key="anomalousSequences" className="dashboard-item">
-      <ResizableCard title="Anomalous Sequences">
-        {selectedSequence ? (
-          <SequenceDetails
-            sequence={selectedSequence}
-            onBack={() => setSelectedSequence(null)}
-          />
-        ) : (
-          <div>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Sequence ID</th>
-                  <th>Reconstruction Error</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {displayedSequences.map((sequence) => (
-                  <tr key={sequence.id}>
-                    <td onClick={() => setSelectedSequence(sequence)} style={{cursor: 'pointer'}}>{sequence._id}</td>
-                    <td>{sequence.reconstruction_error.toFixed(4)}</td>
-                    <td>
-                      <button 
-                        className="themed_button mark-as-normal-button" 
-                        onClick={() => handleMarkAsNormal(sequence.id)}
-                        disabled={isMarkingNormal}
-                      >
-                        Mark as Normal
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div className="pagination-controls">
-              <button className="themed_button" onClick={handlePreviousPage} disabled={currentPage === 1}>Previous</button>
-              <span>Page {currentPage} of {Math.ceil(allAnomalousSequences.length / sequencesPerPage)}</span>
-              <button className="themed_button" onClick={handleNextPage} disabled={currentPage * sequencesPerPage >= allAnomalousSequences.length}>Next</button>
-            </div>
-            <button className="refresh-button" onClick={handleRefreshAnomalousSequences}>Refresh Data</button>
-          </div>
-        )}
-      </ResizableCard>
-    </div>
-  );
-
-  const renderMongoDataCard = () => (
-    <div key="mongoData" className="dashboard-item">
-      <ResizableCard title="MongoDB Data Sample">
-        <div className="date-selection">
-          <label>
-            Start Date:
-            <input 
-              type="datetime-local" 
-              value={startDate} 
-              onChange={(e) => setStartDate(e.target.value)} 
-            />
-          </label>
-          <label>
-            End Date:
-            <input 
-              type="datetime-local" 
-              value={endDate} 
-              onChange={(e) => setEndDate(e.target.value)} 
-            />
-          </label>
-          <button className="themed_button" onClick={applyFilter}>
-            Apply Filter
-          </button>
-        </div>
-        {isLoadingMongoData ? (
-          <p className="loading">Loading MongoDB data...</p>
-        ) : mongoData.length > 0 ? (
-          <>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Timestamp</th>
-                </tr>
-              </thead>
-              <tbody>
-                {mongoData.map((item, index) => (
-                  <tr key={index}>
-                    <td>{item._id}</td>
-                    <td>{new Date(item.timestamp.$date).toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div className="pagination-controls">
-              <button onClick={handlePreviousPage} disabled={currentPage === 1}>Previous</button>
-              <span>Page {currentPage} of {totalPages}</span>
-              <button onClick={handleNextPage} disabled={currentPage === totalPages}>Next</button>
-            </div>
-          </>
-        ) : (
-          <p>No data available</p>
-        )}
-      </ResizableCard>
-    </div>
-  );
-
-  const SequenceDetails = ({ sequence, onBack }) => {
-    // Prepare the data in the format expected by DataTable
-    const formattedData = [{
-      id: sequence.id,
-      sequence: sequence.human_readable.map(packet => 
-        // Create a dummy 'sequence' array to match the expected structure
-        [packet.src_ip, packet.dst_ip, '', '', '', packet.protocol, packet.src_port, packet.dst_port]
-      ),
-      human_readable: sequence.human_readable
-    }];
-  
-    return (
-      <div>
-        <button className="themed_button" onClick={onBack}>Back to List</button>
-        <h3>Sequence ID: {sequence.id}</h3>
-        <p>Reconstruction Error: {sequence.reconstruction_error.toFixed(4)}</p>
-        <p>Is Anomaly: {sequence.is_anomaly ? 'Yes' : 'No'}</p>
-        <DataTable
-          data={formattedData}
-          columns={[
-            { key: 'src_ip', label: 'Source IP', index: 0, render: (packet, human) => human.src_ip },
-            { key: 'dst_ip', label: 'Destination IP', index: 1, render: (packet, human) => human.dst_ip },
-            { key: 'protocol', label: 'Protocol', index: 5, render: (packet, human) => human.protocol },
-            { key: 'src_port', label: 'Source Port', index: 6, render: (packet, human) => human.src_port },
-            { key: 'dst_port', label: 'Destination Port', index: 7, render: (packet, human) => human.dst_port },
-            { key: 'flags', label: 'Flags', render: (packet, human) => human.flags },
-          ]}
-          isMultiSequence={false}
-        />
-      </div>
-    );
-  };
-
   const TrainingStatusDisplay = ({ status, progress, message }) => (
     <div className="training-status">
       <p><strong>Status:</strong> {status}</p>
@@ -571,13 +425,11 @@ const Dashboard = () => {
     <div className="container">
       {renderLogoCard()}
       <div className="dashboard">
-        {[
-          renderTrainModelCard(),
-          renderAnomalyNumbersCard(),
-          renderAnomalousSequencesCard(),
-          renderDataFlowHealthCard(),
-          renderMongoDataCard()
-        ]}
+        {renderTrainModelCard()}
+        {renderAnomalyNumbersCard()}
+        <AnomalousSequencesCard />
+        {renderDataFlowHealthCard()}
+        <MongoDataCard />
       </div>
     </div>
   );

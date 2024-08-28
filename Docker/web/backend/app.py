@@ -1,9 +1,11 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
 import logging
+import sys
 import threading
 import time
 import os
+import traceback
 import uuid
 from flask import Flask, jsonify, request
 from confluent_kafka import Consumer, KafkaException, Producer
@@ -67,9 +69,8 @@ def allowed_file(filename):
 
 
 ##########################################
-# KAFKA UTILITY
+# KAFKA AND MONGO UTILITY
 ##########################################
-
 
 class ConsumerManager:
     def __init__(self, config):
@@ -125,6 +126,7 @@ consumer_config = {
 
 producer_manager = ProducerManager()
 consumer_manager = ConsumerManager(consumer_config)
+producer = producer_manager.get_producer(LABELED_DATA_TOPIC)
 
 def broker_accessible(broker_address, max_retries=MAX_RETRIES, retry_delay=RETRY_DELAY):
     for attempt in range(max_retries):
@@ -158,6 +160,29 @@ def topic_exists(broker_address, topic_name, max_retries=MAX_RETRIES, retry_dela
             if attempt < max_retries - 1:
                 time.sleep(retry_delay * (2 ** attempt))
     return False
+
+def check_mongo_connection():
+    try:
+        # Attempt to fetch server info
+        mongo_client.server_info()
+        # Check if we can access the collection
+        sequences_collection.find_one()
+        logging.info("MongoDB connection successful")
+        return True
+    except ConnectionFailure:
+        logging.error("MongoDB connection failed")
+    except ServerSelectionTimeoutError:
+        logging.error("MongoDB server selection timeout")
+    except Exception as e:
+        logging.error(f"Unexpected error when connecting to MongoDB: {str(e)}")
+    return False
+
+def delivery_report(err, msg):
+    if err is not None:
+        logging.error(f'Message delivery failed: {err}')
+    else:
+        logging.info(f'Message delivered to {msg.topic()} [{msg.partition()}]')
+
 
 ##########################################
 # FLASK UTILITY
@@ -200,33 +225,59 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 # Initialize SocketIO
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-producer = producer_manager.get_producer(LABELED_DATA_TOPIC)
-
-def delivery_report(err, msg):
-    if err is not None:
-        logging.error(f'Message delivery failed: {err}')
-    else:
-        logging.info(f'Message delivered to {msg.topic()} [{msg.partition()}]')
-
-def check_mongo_connection():
-    try:
-        # Attempt to fetch server info
-        mongo_client.server_info()
-        # Check if we can access the collection
-        sequences_collection.find_one()
-        logging.info("MongoDB connection successful")
-        return True
-    except ConnectionFailure:
-        logging.error("MongoDB connection failed")
-    except ServerSelectionTimeoutError:
-        logging.error("MongoDB server selection timeout")
-    except Exception as e:
-        logging.error(f"Unexpected error when connecting to MongoDB: {str(e)}")
-    return False
-
 ##########################################
 # HANDLERS
 ##########################################
+
+
+anomalous_sequences = []  # In-memory storage for anomalous sequences
+
+@socketio.on('anomalous_sequences_update')
+def handle_anomalous_sequences_update(data):
+    global anomalous_sequences
+    anomalous_sequences.extend(data['sequences'])
+    # Optionally, limit the size of anomalous_sequences to prevent memory issues
+    anomalous_sequences = anomalous_sequences[-1000:]  # Keep only the last 1000 sequences
+
+@app.route('/api/anomalous_sequences', methods=['GET'])
+def get_anomalous_sequences():
+    logging.info("Received request for anomalous sequences")
+    page = int(request.args.get('page', 1))
+    per_page = int(request.args.get('per_page', 10))
+    start = (page - 1) * per_page
+    end = start + per_page
+    logging.info(f"Fetching anomalous sequences: page={page}, per_page={per_page}, start={start}, end={end}")
+    logging.info(f"Total anomalous sequences: {len(anomalous_sequences)}")
+    sequences = anomalous_sequences[start:end]
+    logging.info(f"Returning {len(sequences)} sequences")
+    return jsonify({
+        'data': sequences,
+        'total_pages': (len(anomalous_sequences) + per_page - 1) // per_page,
+        'current_page': page
+    })
+
+@app.route('/api/mongodb_data', methods=['GET'])
+def get_mongodb_data():
+    page = int(request.args.get('page', 1))
+    per_page = int(request.args.get('per_page', 10))
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+
+    query = {}
+    if start_date:
+        query['timestamp'] = {'$gte': datetime.fromisoformat(start_date)}
+    if end_date:
+        query['timestamp'] = query.get('timestamp', {})
+        query['timestamp']['$lte'] = datetime.fromisoformat(end_date)
+
+    total_count = db.sequences.count_documents(query)
+    data = list(db.sequences.find(query).skip((page - 1) * per_page).limit(per_page))
+
+    return jsonify({
+        'data': json.loads(json_util.dumps(data)),
+        'total_pages': (total_count + per_page - 1) // per_page,
+        'current_page': page
+    })
 
 @socketio.on('connect')
 def handle_connect():
@@ -292,7 +343,6 @@ def training_data():
             return jsonify({"error": "Failed to initiate data processing"}), 500
     except requests.RequestException as e:
         return jsonify({"error": f"Error communicating with data processing service: {str(e)}"}), 500
-
 
 @app.route('/model_status', methods=['GET'])
 def get_model_status():
@@ -369,25 +419,24 @@ def get_data():
         page = int(request.args.get('page', 1))
         per_page = int(request.args.get('per_page', 10))
 
-        logging.debug(f"Received request with params: start_date={start_date}, end_date={end_date}, page={page}, per_page={per_page}")
+        logging.info(f"Received request with params: start_date={start_date}, end_date={end_date}, page={page}, per_page={per_page}")
 
         query = {}
-        if start_date and end_date:
+        if start_date:
             start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
-            end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
-            # Add a day to the end date to include the entire last day
-            end = end + timedelta(days=1)
-            
-            # Convert to string format matching the database
-            start_str = start.strftime("%m/%d/%Y, %I:%M:%S %p")
-            end_str = end.strftime("%m/%d/%Y, %I:%M:%S %p")
-            
-            query['timestamp'] = {'$gte': start_str, '$lt': end_str}
+            query['timestamp'] = query.get('timestamp', {})
+            query['timestamp']['$gte'] = start
 
-        logging.debug(f"Constructed query: {query}")
+        if end_date:
+            end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            end = end + timedelta(days=1)  # Include the entire last day
+            query['timestamp'] = query.get('timestamp', {})
+            query['timestamp']['$lt'] = end
+
+        logging.info(f"Constructed query: {query}")
 
         total_count = sequences_collection.count_documents(query)
-        logging.debug(f"Total documents matching query: {total_count}")
+        logging.info(f"Total documents matching query: {total_count}")
 
         total_pages = (total_count + per_page - 1) // per_page
 
@@ -395,14 +444,14 @@ def get_data():
                     .skip((page - 1) * per_page)
                     .limit(per_page))
 
-        logging.debug(f"Retrieved {len(data)} documents")
+        logging.info(f"Retrieved {len(data)} documents")
 
         response_data = {
             'data': json.loads(json_util.dumps(data)),
             'total_pages': total_pages,
             'current_page': page
         }
-        logging.debug(f"Sending response: {response_data}")
+        logging.info(f"Sending response: {response_data}")
 
         return jsonify(response_data)
     except Exception as e:
@@ -421,24 +470,6 @@ def validate_data_size(data):
         logging.error(f"Invalid feature count: {len(data['sequence'][0])} != {FEATURE_COUNT}")
         return False
     return True
-
-def get_anomalous_sequences():
-    global anomalous_sequences, last_prediction_data_time
-    consumer = consumer_manager.get_consumer(PREDICTION_TOPIC, 'anomalous_prediction_consumer_group')
-    anomalous_sequences = []
-    while True:
-        msg = consumer.poll(0.01)
-        if msg is None or msg.error():
-            break
-        last_prediction_data_time = datetime.now()
-        prediction = json.loads(msg.value().decode('utf-8'))
-        if prediction.get('is_anomaly'):
-            anomalous_sequences.append({
-                '_id': prediction['_id'],
-                'reconstruction_error': prediction['reconstruction_error'],
-                'human_readable': prediction['human_readable']
-            })
-    return anomalous_sequences
 
 def get_raw_sample():
     global last_raw_data_time
@@ -512,7 +543,7 @@ def get_training_sample():
             return None
 
 def get_anomaly_numbers():
-    global last_prediction_data_time, total_predictions, normal_predictions, anomalous_predictions
+    global last_prediction_data_time, total_predictions, normal_predictions, anomalous_predictions, anomalous_sequences
     consumer = consumer_manager.get_consumer(PREDICTION_TOPIC, 'prediction_consumer_group')
     msg = consumer.poll(0.01)
     if msg is None or msg.error():
@@ -522,8 +553,21 @@ def get_anomaly_numbers():
     total_predictions += 1
     if prediction['is_anomaly']:
         anomalous_predictions += 1
+        # Append the anomalous sequence to our list
+        anomalous_sequences.append({
+            '_id': prediction.get('_id', str(uuid.uuid4())),  # Use a UUID if _id is not provided
+            'timestamp': prediction.get('timestamp', datetime.now().isoformat()),
+            'sequence': prediction.get('sequence', []),
+            'reconstruction_error': prediction.get('reconstruction_error', 0),
+            'human_readable': prediction.get('human_readable', {})
+        })
+        # Limit the size of anomalous_sequences to prevent memory issues
+        if len(anomalous_sequences) > 1000:
+            anomalous_sequences = anomalous_sequences[-1000:]
+        logging.info(f"Anomalous sequence added. Total anomalous sequences: {len(anomalous_sequences)}")
     else:
         normal_predictions += 1
+    
     return {
         'total': total_predictions,
         'normal': normal_predictions,
@@ -592,13 +636,14 @@ def emit_anomalous_sequences():
     with app.app_context():
         while True:
             try:
-                anomalous_sequences = get_anomalous_sequences()
+                logging.info(f"Current anomalous sequences: {len(anomalous_sequences)}")
                 socketio.emit('anomalous_sequences_update', {
                     'total': len(anomalous_sequences),
                     'sequences': anomalous_sequences[-5:]  # Send only the 5 most recent anomalous sequences
                 })
             except Exception as e:
                 logging.error(f"Error in emit_anomalous_sequences: {e}")
+                logging.error(traceback.format_exc())
             socketio.sleep(1)
 
 def emit_health_status():
@@ -684,6 +729,9 @@ def emit_data_flow_health():
 ##########################################
 # MAIN
 ##########################################
+
+logging.basicConfig(level=logging.DEBUG, stream=sys.stdout,
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', '5000'))
