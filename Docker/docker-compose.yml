@@ -55,7 +55,10 @@ services:
       "
     networks:
       - kafka_network
-
+    # kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic docker-connect-configs --replication-factor 1 --partitions 1
+    # kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic docker-connect-offsets --replication-factor 1 --partitions 1
+    # kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic docker-connect-status --replication-factor 1 --partitions 1
+     
   torchserve:
     build:
       context: ./model_store
@@ -198,7 +201,7 @@ services:
         confluent-hub install --no-prompt mongodb/kafka-connect-mongodb:latest
         /etc/confluent/docker/run &
         echo "Waiting for Kafka Connect to start..."
-        sleep 35
+        sleep 60
         echo "Listing installed plugins:"
         ls -R /usr/share/java /usr/share/confluent-hub-components
         echo "Attempting to create connector:"

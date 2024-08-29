@@ -577,7 +577,7 @@ def get_training_sample():
 def get_anomaly_numbers():
     global last_prediction_data_time, total_predictions, normal_predictions, anomalous_predictions, anomalous_sequences
     consumer = consumer_manager.get_consumer(PREDICTION_TOPIC, 'prediction_consumer_group')
-    msg = consumer.poll(0.01)
+    msg = consumer.poll(0.1)
     if msg is None or msg.error():
         return None
     last_prediction_data_time = datetime.now()
@@ -608,7 +608,7 @@ def get_anomaly_numbers():
 
 def get_data_flow_health():
     current_time = datetime.now()
-    threshold = timedelta(seconds=5)  # Adjust this value as needed
+    threshold = timedelta(seconds=1) 
     
     def get_status_with_time(last_time):
         if last_time and (current_time - last_time) < threshold:
@@ -618,12 +618,10 @@ def get_data_flow_health():
     raw_status, raw_time = get_status_with_time(last_raw_data_time)
     processed_status, processed_time = get_status_with_time(last_processed_data_time)
     prediction_status, prediction_time = get_status_with_time(last_prediction_data_time)
-    training_data_status, training_data_time = get_status_with_time(last_training_data_time)
     
     return {
         "raw": {"status": raw_status, "last_update": raw_time},
         "processed": {"status": processed_status, "last_update": processed_time},
-        #"training": {"status": training_data_status, "last_update": training_data_time},
         "prediction": {"status": prediction_status, "last_update": prediction_time},
         "backend": {"status": "healthy", "last_update": current_time.isoformat()}
     }
@@ -663,7 +661,7 @@ def emit_job_status(job_id=None):
                     "job_id": job_id
                 })
                 break
-            socketio.sleep(2)  # Check status every 5 seconds
+            socketio.sleep(1)
 
 def emit_anomalous_sequences():
     with app.app_context():
@@ -683,7 +681,7 @@ def emit_health_status():
     with app.app_context():
         while True:
             try:
-                health_status = {'status': 'OK'}  # Replace with actual health check
+                health_status = {'status': 'OK'}
                 socketio.emit('health_update', health_status)
             except Exception as e:
                 logging.error(f"Error in emit_health_status: {e}")
@@ -744,10 +742,14 @@ def emit_anomaly_numbers():
             try:
                 numbers = get_anomaly_numbers()
                 if numbers:
-                    socketio.emit('anomaly_numbers_update', numbers)
+                    socketio.emit('traffic_ratio_update', {
+                        'normal_count': numbers['normal'],
+                        'anomalous_count': numbers['anomalous'],
+                        'total_count': numbers['total']
+                    })
             except Exception as e:
                 logging.error(f"Error in emit_anomaly_numbers: {e}")
-            socketio.sleep(.01)
+            socketio.sleep(0.1)  # Control update frequency
 
 def emit_data_flow_health():
     with app.app_context():

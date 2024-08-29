@@ -6,6 +6,7 @@ import logo from './Expanded-Cove-Logo.jpg';
 import axios from 'axios';
 import AnomalousSequencesCard from './AnomalousSequencesCard';
 import MongoDataCard from './MongoDataCard';
+import TrafficRatioChart from './TrafficRatioChart';
 
 const Dashboard = () => {
   // State variables
@@ -28,6 +29,7 @@ const Dashboard = () => {
   });
 
   const [allAnomalousSequences, setAllAnomalousSequences] = useState([]);
+  const maxSequences = 1000; // Set a maximum number of sequences to keep
   const [displayedSequences, setDisplayedSequences] = useState([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [sequencesPerPage] = useState(5);
@@ -128,7 +130,7 @@ const Dashboard = () => {
 
       if (data && Array.isArray(data.sequences) && data.sequences.length > 0) {
         setAllAnomalousSequences(prevSequences => {
-          const updatedSequences = [...prevSequences, ...data.sequences];
+          const updatedSequences = [...data.sequences, ...prevSequences].slice(0, maxSequences);
           console.log('Updated state after refresh:', updatedSequences);
           return updatedSequences;
         });
@@ -150,21 +152,13 @@ const Dashboard = () => {
   }, [sequencesPerPage]);
 
   const handleAnomalousSequencesUpdate = useCallback((data) => {
-    //console.log('Received anomalous sequences update:', data);
-    //console.log('Current sequences before update:', allAnomalousSequences);
-
     if (data && Array.isArray(data.sequences) && data.sequences.length > 0) {
-      const updatedSequences = [
-        ...allAnomalousSequences,
-        ...data.sequences
-      ];
-
-      setAllAnomalousSequences(updatedSequences);
-      //console.log('Updated sequences after emission:', updatedSequences);
-    } else {
-      //console.log('Received an empty or invalid update, no changes made.');
+      setAllAnomalousSequences(prevSequences => {
+        const updatedSequences = [...data.sequences, ...prevSequences].slice(0, maxSequences);
+        return updatedSequences;
+      });
     }
-  }, [allAnomalousSequences]);
+  }, []);
 
   useEffect(() => {
     updateDisplayedSequences(allAnomalousSequences, currentPage);
@@ -235,6 +229,20 @@ const Dashboard = () => {
   useEffect(() => {
     const newSocket = io("http://localhost:5000", {
       transports: ["websocket"],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 20000,
+    });
+
+    newSocket.on("connect", () => {
+      console.log("Connected to server");
+      handleRefreshAnomalousSequences();
+    });
+
+    newSocket.on("disconnect", (reason) => {
+      console.log("Disconnected from server:", reason);
     });
 
     newSocket.on("connect_error", (err) => {
@@ -244,14 +252,16 @@ const Dashboard = () => {
     newSocket.on("data_flow_health_update", setDataFlowHealth);
     newSocket.on("raw_sample_update", setRawSample);
     newSocket.on("processed_sample_update", setProcessedSample);
-    newSocket.on("anomaly_numbers_update", setAnomalyNumbers);
-    newSocket.on("training_status_update", (status) => {
-      //console.log("Received training status update:", status);
-      setTrainingStatus(status);
+    newSocket.on("traffic_ratio_update", (data) => {
+      setAnomalyNumbers({
+          total: data.total_count,
+          normal: data.normal_count,
+          anomalous: data.anomalous_count
+      });
     });
-    newSocket.on("anomalous_sequences_update", handleAnomalousSequencesUpdate);
 
-    handleRefreshAnomalousSequences();
+    newSocket.on("training_status_update", setTrainingStatus);
+    newSocket.on("anomalous_sequences_update", handleAnomalousSequencesUpdate);
 
     return () => {
       newSocket.disconnect();
@@ -277,21 +287,33 @@ const Dashboard = () => {
     </div>
   );
 
-  const renderAnomalyNumbersCard = () => (
-    <div key="anomalyNumbers" className="dashboard-item">
-      <ResizableCard title="Anomaly Numbers">
-        {anomalyNumbers ? (
-          <div>
-            <p><span className="data-label">Total Predictions:</span> {anomalyNumbers.total}</p>
-            <p><span className="data-label">Normal Sequences:</span> {anomalyNumbers.normal}</p>
-            <p><span className="data-label">Anomalous Sequences:</span> {anomalyNumbers.anomalous}</p>
-          </div>
-        ) : (
-          <p className="loading">Loading anomaly data...</p>
-        )}
-      </ResizableCard>
+  const renderTrafficRatioChart = () => (
+    <div key="trafficRatio" className="dashboard-item">
+        <ResizableCard title="Traffic Ratio">
+            <TrafficRatioChart 
+                normal={anomalyNumbers.normal} 
+                anomalous={anomalyNumbers.anomalous} 
+            />
+        </ResizableCard>
     </div>
   );
+
+  const renderAnomalyNumbersCard = () => (
+    <div key="anomalyNumbers" className="dashboard-item">
+        <ResizableCard title="Anomaly Numbers">
+            {anomalyNumbers ? (
+                <div>
+                    <p><span className="data-label">Total Predictions:</span> {anomalyNumbers.total}</p>
+                    <p><span className="data-label">Normal Sequences:</span> {anomalyNumbers.normal}</p>
+                    <p><span className="data-label">Anomalous Sequences:</span> {anomalyNumbers.anomalous}</p>
+                </div>
+            ) : (
+                <p className="loading">Loading anomaly data...</p>
+            )}
+        </ResizableCard>
+    </div>
+);
+
 
   const renderRawSampleCard = () => (
     <div key="rawSample" className="dashboard-item">
@@ -426,9 +448,10 @@ const Dashboard = () => {
       {renderLogoCard()}
       <div className="dashboard">
         {renderTrainModelCard()}
-        {renderAnomalyNumbersCard()}
-        <AnomalousSequencesCard />
         {renderDataFlowHealthCard()}
+        {renderAnomalyNumbersCard()}
+        {renderTrafficRatioChart()}
+        <AnomalousSequencesCard />
         <MongoDataCard />
       </div>
     </div>
