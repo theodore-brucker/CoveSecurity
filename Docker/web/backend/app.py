@@ -56,7 +56,8 @@ model_training = False
 total_predictions = 0
 normal_predictions = 0
 anomalous_predictions = 0
-anomalous_sequences = []
+anomalous_sequences = []  # In-memory storage for anomalous sequences
+false_positive_sequences = []  # New list to store false positives
 logging.basicConfig(level=logging.INFO)
 
 training_status = {
@@ -242,8 +243,6 @@ def update_training_status(new_status):
     logging.info(f"Training status updated: {training_status}")
     socketio.emit('training_status_update', training_status)
 
-anomalous_sequences = []  # In-memory storage for anomalous sequences
-
 @socketio.on('anomalous_sequences_update')
 def handle_anomalous_sequences_update(data):
     global anomalous_sequences
@@ -259,12 +258,16 @@ def get_anomalous_sequences():
     start = (page - 1) * per_page
     end = start + per_page
     logging.info(f"Fetching anomalous sequences: page={page}, per_page={per_page}, start={start}, end={end}")
-    logging.info(f"Total anomalous sequences: {len(anomalous_sequences)}")
-    sequences = anomalous_sequences[start:end]
+    
+    # Filter out sequences that are in false_positive_sequences
+    filtered_sequences = [seq for seq in anomalous_sequences if seq not in false_positive_sequences]
+    
+    logging.info(f"Total anomalous sequences (excluding false positives): {len(filtered_sequences)}")
+    sequences = filtered_sequences[start:end]
     logging.info(f"Returning {len(sequences)} sequences")
     return jsonify({
         'data': sequences,
-        'total_pages': (len(anomalous_sequences) + per_page - 1) // per_page,
+        'total_pages': (len(filtered_sequences) + per_page - 1) // per_page,
         'current_page': page
     })
 
@@ -405,17 +408,34 @@ def get_paginated_anomalous_sequences():
 def mark_as_normal():
     data = request.json
     _id = data.get('_id')
+    logging.info(f"Received request to mark sequence {_id} as normal")
+    
     if not _id:
+        logging.warning("Request to mark as normal received without _id")
         return jsonify({"error": "Missing _id"}), 400
 
+    # Find the sequence in anomalous_sequences
+    sequence = next((seq for seq in anomalous_sequences if seq['_id'] == _id), None)
+    if not sequence:
+        logging.warning(f"Sequence {_id} not found in anomalous sequences")
+        return jsonify({"error": "Sequence not found in anomalous sequences"}), 404
+
+    # Remove from anomalous_sequences and add to false_positive_sequences
+    anomalous_sequences[:] = [seq for seq in anomalous_sequences if seq['_id'] != _id]
+    false_positive_sequences.append(sequence)
+    
+    logging.info(f"Sequence {_id} removed from anomalous sequences and added to false positives")
+    logging.info(f"Current anomalous sequences count: {len(anomalous_sequences)}")
+    logging.info(f"Current false positive sequences count: {len(false_positive_sequences)}")
+
     update_data = {
-        "timestamp": datetime.now(),  # Current timestamp as datetime object
-        "sequence": None,  # We don't have the sequence data here, so set to None
+        "timestamp": datetime.now(),
+        "sequence": sequence['sequence'],
         "is_training": False,
-        "human_readable": None,  # We don't have this data, so set to None
-        "is_anomaly": False,  # Since we're marking it as normal, set this to False
-        "reconstruction_error": None,  # We don't have this data, so set to None
-        "is_false_positive": True  # This field is not in the schema, but we'll keep it for now
+        "human_readable": sequence.get('human_readable'),
+        "is_anomaly": False,
+        "reconstruction_error": sequence.get('reconstruction_error'),
+        "is_false_positive": True
     }
     
     try:
@@ -426,7 +446,8 @@ def mark_as_normal():
             callback=delivery_report
         )
         producer.flush()
-        return jsonify({"message": "Sequence marked as normal"}), 200
+        logging.info(f"Sequence {_id} successfully marked as normal and sent to Kafka topic")
+        return jsonify({"message": "Sequence marked as normal (false positive)"}), 200
     except Exception as e:
         logging.error(f"Error updating sequence {_id}: {e}")
         return jsonify({"error": "Failed to mark sequence as normal"}), 500
@@ -575,7 +596,7 @@ def get_training_sample():
             return None
 
 def get_anomaly_numbers():
-    global last_prediction_data_time, total_predictions, normal_predictions, anomalous_predictions, anomalous_sequences
+    global last_prediction_data_time, total_predictions, normal_predictions, anomalous_predictions, anomalous_sequences, false_positive_sequences
     consumer = consumer_manager.get_consumer(PREDICTION_TOPIC, 'prediction_consumer_group')
     msg = consumer.poll(0.1)
     if msg is None or msg.error():
@@ -585,21 +606,27 @@ def get_anomaly_numbers():
     total_predictions += 1
     if prediction['is_anomaly']:
         anomalous_predictions += 1
-        # Append the anomalous sequence to our list
-        anomalous_sequences.append({
-            '_id': prediction.get('_id', str(uuid.uuid4())),  # Use a UUID if _id is not provided
+        new_anomaly = {
+            '_id': prediction.get('_id', str(uuid.uuid4())),
             'timestamp': prediction.get('timestamp', datetime.now().isoformat()),
             'sequence': prediction.get('sequence', []),
             'reconstruction_error': prediction.get('reconstruction_error', 0),
             'human_readable': prediction.get('human_readable', {})
-        })
+        }
+        if new_anomaly not in false_positive_sequences:
+            anomalous_sequences.append(new_anomaly)
+            logging.info(f"New anomalous sequence added with ID: {new_anomaly['_id']}")
+        else:
+            logging.info(f"Sequence {new_anomaly['_id']} not added to anomalous sequences (marked as false positive)")
         # Limit the size of anomalous_sequences to prevent memory issues
         if len(anomalous_sequences) > 1000:
-            anomalous_sequences = anomalous_sequences[-1000:]
+            removed_sequence = anomalous_sequences.pop(0)
+            logging.info(f"Removed oldest anomalous sequence with ID: {removed_sequence['_id']}")
         logging.info(f"Anomalous sequence added. Total anomalous sequences: {len(anomalous_sequences)}")
     else:
         normal_predictions += 1
     
+    logging.info(f"Current prediction stats - Total: {total_predictions}, Normal: {normal_predictions}, Anomalous: {anomalous_predictions}")
     return {
         'total': total_predictions,
         'normal': normal_predictions,
