@@ -5,12 +5,17 @@
 My mission is to bring power back to the average person on the internet.
 
 ## Description
-Cove Security learns intricate network traffic patterns and detects novel and known attacks with increasing accuracy as it analyzes and learns a better and better representation of the network. By consuming only header level packet information Cove Security is able to detect attacks that are currently undetected by traditional rule based systems at a fraction of the compute cost.  
+Cove Security learns intricate network traffic patterns and detects novel and known attacks with increasing accuracy as it analyzes and learns a better and better representation of the network. By consuming only header-level packet information Cove Security can detect attacks that are currently undetected by traditional rule-based systems at a fraction of the compute cost.  
 
 Cybersecurity companies currently charge an unimaginable amount of money for products that are just now catching up to modern machine learning techniques.
 
 ## Getting Started
 ### Prerequisites
+### Recommended Hardware
+CPU cores: 4
+Memory: 4 Gb
+Storage: 15 Gb
+
 ### on Windows
 Operating System: Windows 11 Home 23H2  
 Ubuntu: 22.04.1 LTS (via WSL if needed)  
