@@ -321,11 +321,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .data-table th:nth-child(3), .data-table td:nth-child(3) { 
-  width: 80px; /* Is Anomaly */
-}
-
-.data-table th:nth-child(4), .data-table td:nth-child(4) { 
-  width: 120px; /* Actions */
+  width: 80px; /* Actions */
 }
 
 /* Remove or comment out the unused column styles */
@@ -508,8 +504,20 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .mark-as-normal-button {
-  padding: 5px 10px;
-  font-size: 0.9em;
+  padding: 2px 5px;
+  font-size: 0.8em;
   white-space: nowrap;
   width: auto;
+  margin: 2px 0;
+}
+
+.button-container {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: center;
+}
+
+.data-table th:nth-child(3), .data-table td:nth-child(3) { 
+  width: 80px; /* Actions column */
 }

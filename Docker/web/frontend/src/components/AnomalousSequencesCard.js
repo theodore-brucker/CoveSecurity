@@ -54,8 +54,8 @@ const AnomalousSequencesCard = () => {
       header: 'Actions', 
       accessor: item => (
         <div className="button-container">
-          <button className="action-button view" onClick={() => setSelectedSequence(item)}>View</button>
-          <button className="action-button mark" onClick={() => handleMarkAsFalsePositive(item._id)}>Mark FP</button>
+          <button className="themed_button mark-as-normal-button" onClick={() => setSelectedSequence(item)}>View</button>
+          <button className="themed_button mark-as-normal-button" onClick={() => handleMarkAsFalsePositive(item._id)}>Mark FP</button>
         </div>
       )
     }
