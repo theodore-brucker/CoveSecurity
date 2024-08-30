@@ -1,4 +1,12 @@
 services:
+
+  # Service classifications
+  # Class: Critical - Services that are critical to the operation of the system
+  # Class: High - Services that are important to the operation of the system, but do not cause other services to fail
+  # Class: Low - Services that are a nice to have, but do not cause other services to fail or effect primary features
+
+  # Necessary for Kafka coordination
+  # Class: Critical
   zookeeper:
     image: confluentinc/cp-zookeeper:latest
     ports:
@@ -8,6 +16,8 @@ services:
     networks:
       - kafka_network
 
+  # Handles high speed data transfer between services
+  # Class: Critical
   kafka:
     image: confluentinc/cp-kafka:latest
     ports:
@@ -34,10 +44,15 @@ services:
         aliases:
           - kafka
 
+  # Used as a helper to ensure that the kafka topics are created
+  # before any services attempt to use them.
+  # Class: Critical
   init-kafka:
     image: confluentinc/cp-kafka:latest
     depends_on:
       - kafka
+
+    # This container runs the command, and after it finishes it turns itself off
     entrypoint: [ '/bin/sh', '-c' ]
     command: |
       "
@@ -50,15 +65,15 @@ services:
       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic predictions --replication-factor 1 --partitions 1
       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic training_data --replication-factor 1 --partitions 1
       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic labeled_data --replication-factor 1 --partitions 1
+
       echo -e 'Successfully created the following topics:'
       kafka-topics --bootstrap-server kafka:9092 --list
       "
     networks:
       - kafka_network
-    # kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic docker-connect-configs --replication-factor 1 --partitions 1
-    # kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic docker-connect-offsets --replication-factor 1 --partitions 1
-    # kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic docker-connect-status --replication-factor 1 --partitions 1
      
+  # Primary component for serving and training models
+  # Class: High
   torchserve:
     build:
       context: ./model_store
@@ -75,10 +90,11 @@ services:
       - MODEL_STORE_PATH=/home/model-server/model-store/
     volumes:
       - ./model_store:/home/model-server/model-store
-      - scaler_data:/home/model-server/scaler_data
     networks:
       - kafka_network
 
+  # Primary interface for user interacting with the system
+  # Class: Critical
   web_backend:
     build:
       context: ./web/backend
@@ -86,17 +102,20 @@ services:
       - ./web/backend:/app
       - training_data:/app/training_data
     environment:
+      - training_data:/app/training_data
+      # Environment variables for Kakfa
       - KAFKA_BROKER=kafka:9092
       - RAW_TOPIC=raw_data
       - PROCESSED_TOPIC=processed_data
       - PREDICTION_TOPIC=predictions
       - TRAINING_TOPIC=training_data
       - LABELED_TOPIC=labeled_data
+
+      # Networking variables
       - MAX_RETRIES=5
       - RETRY_DELAY=2
       - DATA_PROCESSING_URL=http://172.17.0.1:5001
       - MONGO_URI=mongodb://mongodb:27017/
-      - training_data:/app/training_data
     ports:
       - "5000:5000"
     networks:
@@ -109,6 +128,8 @@ services:
       - kafka
       - mongodb
 
+  # Frontend for the web interface
+  # Class: High
   web_frontend:
     build:
       context: ./web/frontend
@@ -121,6 +142,8 @@ services:
     networks:
       - kafka_network
 
+  # Collects data from the network interface, processes it, and pushes it to Kafka
+  # Class: High
   data_processing:
     build:
       context: ./data_processing
@@ -129,26 +152,32 @@ services:
       - NET_ADMIN
       - NET_RAW
     volumes:
-      - scaler_data:/app/scaler_data
       - training_data:/app/training_data
     environment:
+
+    # Environment variables for Kakfa
       - KAFKA_BROKER=localhost:29092
       - RAW_TOPIC=raw_data
       - PROCESSED_TOPIC=processed_data
       - PREDICTIONS_TOPIC=predictions
       - TRAINING_TOPIC=training_data
       - CAPTURE_INTERFACE=eth0
+
+    # Environment variables for TorchServe
       - TORCHSERVE_REQUESTS=http://localhost:8080
       - TORCHSERVE_MANAGEMENT=http://localhost:8081
       - TORCHSERVE_METRICS=http://localhost:8082
       - ANOMALY_THRESHOLD=.5
-      - WEB_BACKEND_URL=http://localhost:5000
-      - MODEL_NAME=transformer_autoencoder
-      - MONGO_URI=mongodb://mongodb:27017/
       - training_data:/app/training_data
       - SEQUENCE_LENGTH=16
       - FEATURE_COUNT=12
+      - MODEL_NAME=transformer_autoencoder
+
+    # Networking variables
+      - WEB_BACKEND_URL=http://localhost:5000
+      - MONGO_URI=mongodb://mongodb:27017/
       - FLASK_PORT=5001
+
     depends_on:
       - kafka
       - torchserve
@@ -157,17 +186,22 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # Stores data for the system
+  # Class: Low
   mongodb:
     image: mongo:latest
     ports:
       - "27017:27017"
     volumes:
       - ./database/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
-      # Comment out or remove the next line:
-      # - mongodb_data:/data/db
+      
+      # Comment out the next line and line 266 if you want to start with a fresh database on every restart
+      - mongodb_data:/data/db
     networks:
       - kafka_network
 
+  # Web interface for the MongoDB
+  # Class: Low
   mongo-express:
     image: mongo-express
     ports:
@@ -184,6 +218,8 @@ services:
       - mongodb
     restart: always
 
+  # Connects Kafka topics to MongoDB
+  # Class: High
   kafka-connect:
     image: confluentinc/cp-kafka-connect:latest
     depends_on:
@@ -237,7 +273,6 @@ networks:
     driver: bridge
 
 volumes:
-  scaler_data:
   training_data:
-  # Comment out or remove the next line:
-  # mongodb_data:
+  # Comment out the next line and line 187 if you want to start with a fresh database on every restart
+  mongodb_data:
