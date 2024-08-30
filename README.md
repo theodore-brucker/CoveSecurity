@@ -29,10 +29,6 @@ Operating System: Ubuntu 22.04.1 LTS or equivalent
 Docker Engine Version: 27.0.3  
 Docker Compose Version: v2.28.1
 
-### Docker and Docker Compose
-Install Docker following the official Docker installation guide for your operating system.  
-Install Docker Compose as it is required to orchestrate the containers.
-
 ### Download and Run
 Installation Steps (from terminal)
 1. Clone the repo  
