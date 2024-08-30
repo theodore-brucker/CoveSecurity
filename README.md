@@ -23,7 +23,8 @@ Ubuntu: 22.04.1 LTS (via WSL if needed)
 Docker Desktop Version: 4.32.0  
 Docker Engine Version: 27.0.3  
 Docker Compose Version: v2.28.1
-#### Versioning on Dokcer for Linux
+
+#### Versioning on Docker for Linux
 Operating System: Ubuntu 22.04.1 LTS or equivalent  
 Docker Engine Version: 27.0.3  
 Docker Compose Version: v2.28.1
