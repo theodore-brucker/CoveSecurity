@@ -5,7 +5,7 @@
 My mission is to bring power back to the average person on the internet.
 
 ## Description
-MLSec learns intricate network traffic patterns and detects novel and known attacks with increasing accuracy as it analyzes and learns a better and better representation of the network. By consuming only header level packet information MLSec is able to detect attacks that are currently undetected by traditional rule based systems at a fraction of the compute cost.  
+Cove Security learns intricate network traffic patterns and detects novel and known attacks with increasing accuracy as it analyzes and learns a better and better representation of the network. By consuming only header level packet information Cove Security is able to detect attacks that are currently undetected by traditional rule based systems at a fraction of the compute cost.  
 
 Cybersecurity companies currently charge an unimaginable amount of money for products that are just now catching up to modern machine learning techniques.
 
@@ -29,9 +29,9 @@ Install Docker Compose as it is required to orchestrate the containers.
 ### Download and Run
 Installation Steps (from terminal)
 1. Clone the repo  
-   ```git clone https://github.com/theodore-brucker/mlsec.git```
+   ```git clone https://github.com/theodore-brucker/Cove-Security.git```
 2. Go into the folder  
-   ```cd mlsec```
+   ```cd Cove-Security```
 3. Open docker-compose.yml and view the variables. This file handles the networking between the services.
 4. Build and Start Docker Containers
 Docker Compose to build and start all necessary services:  
