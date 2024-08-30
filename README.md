@@ -10,19 +10,20 @@ Cove Security learns intricate network traffic patterns and detects novel and kn
 Cybersecurity companies currently charge an unimaginable amount of money for products that are just now catching up to modern machine learning techniques.
 
 ## Getting Started
-### Prerequisites
-### Recommended Hardware
-CPU cores: 4
-Memory: 4 Gb
+### Recommended Hardware and Versioning
+
+#### Resources  
+CPU cores: 4  
+Memory: 4 Gb  
 Storage: 15 Gb
 
-### on Windows
+#### Versioning on Windows with WSL and Docker Desktop
 Operating System: Windows 11 Home 23H2  
 Ubuntu: 22.04.1 LTS (via WSL if needed)  
 Docker Desktop Version: 4.32.0  
 Docker Engine Version: 27.0.3  
 Docker Compose Version: v2.28.1
-### on Linux
+#### Versioning on Dokcer for Linux
 Operating System: Ubuntu 22.04.1 LTS or equivalent  
 Docker Engine Version: 27.0.3  
 Docker Compose Version: v2.28.1
