@@ -167,14 +167,15 @@ h1, h2, h3, h4, h5, h6 {
 .date-selection {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin-bottom: 20px;
+  gap: 5px; /* Reduced from 10px */
+  margin-bottom: 10px; /* Reduced from 20px */
 }
 
 .date-selection label {
   display: flex;
   flex-direction: column;
   color: var(--text-secondary);
+  margin-bottom: 0; /* Remove any bottom margin */
 }
 
 .date-selection input {
@@ -183,6 +184,7 @@ h1, h2, h3, h4, h5, h6 {
   border-radius: 4px;
   color: var(--text-primary);
   padding: 5px;
+  margin-bottom: 5px; /* Add a small margin between inputs */
 }
 
 .themed_button {
@@ -192,7 +194,7 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--dark-bg);
   cursor: pointer;
   font-size: 1em;
-  padding: 10px 20px;
+  padding: 8px 15px; /* Reduced padding */
   width: 100%;
   box-sizing: border-box;
 }
@@ -311,19 +313,15 @@ h1, h2, h3, h4, h5, h6 {
 
 /* Specific widths for each column */
 .data-table th:nth-child(1), .data-table td:nth-child(1) { 
-  width: 130px; /* Sequence ID */
+  width: 120px; /* Sequence ID */
 }
 
 .data-table th:nth-child(2), .data-table td:nth-child(2) { 
-  width: 100px; /* Reconstruction Error */
+  width: 40px; /* Reconstruction Error */
 }
 
 .data-table th:nth-child(3), .data-table td:nth-child(3) { 
-  width: 80px; /* Is Anomaly */
-}
-
-.data-table th:nth-child(4), .data-table td:nth-child(4) { 
-  width: 120px; /* Actions */
+  width: 80px; /* Actions */
 }
 
 /* Remove or comment out the unused column styles */
@@ -359,7 +357,8 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .training-status {
-  margin-top: 20px;
+  margin-top: 10px; /* Reduced from 20px */
+  padding: 10px; /* Reduced from 15px */
 }
 
 .training-status .progress-bar {
@@ -393,7 +392,7 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--dark-bg);
   cursor: pointer;
   font-size: 1em;
-  padding: 10px 20px;
+  padding: 8px 15px; /* Reduced padding */
   box-sizing: border-box;
 }
 
@@ -432,8 +431,8 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .tab-content {
-  margin-bottom: 20px;
-  min-height: 200px; /* Adjust this value as needed to ensure consistent height */
+  margin-bottom: 10px; /* Reduced from 20px */
+  min-height: auto; /* Remove fixed height */
   display: flex;
   flex-direction: column;
 }
@@ -443,15 +442,15 @@ h1, h2, h3, h4, h5, h6 {
   width: 100%;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  height: 100%;
+  justify-content: flex-start; /* Changed from space-between */
+  height: auto; /* Remove fixed height */
 }
 
 .themed_button,
 .themed_file_input label {
   width: 100%;
-  padding: 10px 20px;
-  margin-bottom: 10px;
+  padding: 8px 15px; /* Reduced padding */
+  margin-bottom: 5px; /* Reduced from 10px */
   box-sizing: border-box;
   text-align: center;
 }
@@ -487,9 +486,9 @@ h1, h2, h3, h4, h5, h6 {
   cursor: pointer;
   font-size: 1.1em;
   font-weight: bold;
-  padding: 15px 20px;
+  padding: 10px 15px; /* Reduced padding */
   width: 100%;
-  margin-top: 20px;
+  margin-top: 10px; /* Reduced from 20px */
   transition: background-color 0.3s;
 }
 
@@ -498,15 +497,27 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .training-status {
-  margin-top: 20px;
-  padding: 15px;
+  margin-top: 10px; /* Reduced from 20px */
+  padding: 10px; /* Reduced from 15px */
   background-color: var(--card-bg);
   border-radius: 4px;
 }
 
 .mark-as-normal-button {
-  padding: 5px 10px;
-  font-size: 0.9em;
+  padding: 2px 5px;
+  font-size: 0.8em;
   white-space: nowrap;
   width: auto;
+  margin: 2px 0;
+}
+
+.button-container {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: center;
+}
+
+.data-table th:nth-child(3), .data-table td:nth-child(3) { 
+  width: 80px; /* Actions column */
 }

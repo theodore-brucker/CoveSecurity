@@ -1,29 +1,32 @@
-# Use an official Python runtime as a parent image
+# Use Python 3.8 slim image as the base
 FROM python:3.8-slim
-
+# Set environment variable to avoid prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Set the working directory
+# Set the working directory in the container
 WORKDIR /app
 
-# Install system dependencies
+# Update package lists and clean up to reduce image size
 RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy the current directory contents into the container at /app
+# Copy all files from the current directory to /app in the container
 COPY . /app
 
-# Install any needed packages specified in requirements.txt
+# Install Python dependencies from requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
+# Install additional Python packages
 RUN pip install netifaces kafka-python
 
+# Log message (for debugging)
 RUN echo "Exposing port 5001"
-# Make port 5001 available to the world outside this container
+# Expose port 5001 for the application
 EXPOSE 5001
 
+# Log message (for debugging)
 RUN echo "Running main.py"
 
-# Run app.py when the container launches
+# Set the command to run when the container starts
 CMD ["python", "main.py"]
 

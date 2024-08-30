@@ -24,13 +24,39 @@ const AnomalousSequencesCard = () => {
     console.log('AnomalousSequencesCard - Total pages:', totalPages);
   }, [data, currentPage, totalPages]);
 
+  const handleMarkAsFalsePositive = async (id) => {
+    try {
+      const response = await fetch('http://localhost:5000/mark_as_normal', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ _id: id }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to mark sequence as false positive');
+      }
+
+      console.log(`Sequence ${id} marked as false positive`);
+      // Refresh the data to reflect the changes
+      fetchData(currentPage);
+    } catch (error) {
+      console.error('Error marking sequence as false positive:', error);
+      // You might want to set an error state here and display it to the user
+    }
+  };
+
   const columns = [
     { header: 'ID', accessor: item => item._id },
     { header: 'Reconstruction Error', accessor: item => item.reconstruction_error ? item.reconstruction_error.toFixed(4) : 'N/A' },
     { 
       header: 'Actions', 
       accessor: item => (
-        <button onClick={() => setSelectedSequence(item)}>View Details</button>
+        <div className="button-container">
+          <button className="themed_button mark-as-normal-button" onClick={() => setSelectedSequence(item)}>View</button>
+          <button className="themed_button mark-as-normal-button" onClick={() => handleMarkAsFalsePositive(item._id)}>Mark FP</button>
+        </div>
       )
     }
   ];
