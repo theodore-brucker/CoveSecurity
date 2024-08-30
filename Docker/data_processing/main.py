@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import json
 import os
+import sys
 import requests
 import logging
 from scapy.all import IP, TCP, UDP
@@ -248,6 +249,7 @@ def train_and_set_inference_mode(data, is_labeled=False):
             url = f"{TORCHSERVE_MANAGEMENT_URL}/models/{MODEL_NAME}"
             params = {'min_worker': '1'}
             
+
             response = requests.put(url, params=params)
             response.raise_for_status()
             logging.info(f"PUT request successful, status code: {response.status_code}")
@@ -303,7 +305,8 @@ def train_model(data, is_labeled=False):
                 'data': sequences,
                 'is_labeled': is_labeled
             }
-            
+            payload_size = sys.getsizeof(json.dumps(payload))
+            logging.info(f"Attempting to send payload of size: {payload_size} bytes")
             logging.info(f"Sending model training request with {len(sequences)} sequences (attempt {attempt + 1})")
             response = requests.post(url, json=payload, headers=headers)
             
