@@ -555,7 +555,7 @@ def health_check():
 ##################################################
 
 def main():
-    logging.info("MLSEC data processing engine starting")
+    logging.info("Cove Security data processing engine starting")
     time.sleep(5)
 
     available_interfaces = get_available_interfaces()

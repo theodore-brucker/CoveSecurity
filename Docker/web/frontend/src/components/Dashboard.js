@@ -445,7 +445,7 @@ const Dashboard = () => {
   // Main render function
   return (
     <div className="container">
-      <h1>MLSec</h1>
+      <h1>Cove Security</h1>
       <h2>Dashboard</h2>
       <div className="dashboard">
         {renderTrainModelCard()}

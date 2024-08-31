@@ -797,7 +797,7 @@ logging.basicConfig(level=logging.DEBUG, stream=sys.stdout,
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', '5000'))
-    logging.info(f"MLSEC web backend engine starting on 0.0.0.0:{port}")
+    logging.info(f"Cove Security web backend engine starting on 0.0.0.0:{port}")
     
     if not broker_accessible(KAFKA_BROKER):
         logging.error("Kafka broker is not accessible")
