@@ -17,10 +17,6 @@ env/
 logs/
 *.log.*
 
-# Ignore Docker files
-docker-compose.override.yml
-.dockerignore
-
 # Ignore build output directories
 build/
 dist/
@@ -94,12 +90,8 @@ htmlcov/
 .pytest_cache/
 .cache/
 
-# Ignore Jupyter Notebook checkpoints
-.ipynb_checkpoints
-
 # Ignore TorchServe logs and model-store
 logs/
-*.pth 
 
 # Ignore backend static and media files (customize if needed)
 staticfiles/
