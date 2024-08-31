@@ -33,10 +33,10 @@ jobs:
           docker-compose -f Docker/docker-compose.yml build torchserve web_backend web_frontend data_processing
           
           # Use the correct naming convention
-          docker tag ${REPO_NAME}_torchserve:latest ghcr.io/${REPO_NAME}/torchserve:latest
-          docker tag ${REPO_NAME}_web_backend:latest ghcr.io/${REPO_NAME}/web_backend:latest
-          docker tag ${REPO_NAME}_web_frontend:latest ghcr.io/${REPO_NAME}/web_frontend:latest
-          docker tag ${REPO_NAME}_data_processing:latest ghcr.io/${REPO_NAME}/data_processing:latest
+          docker tag $torchserve:latest ghcr.io/${REPO_NAME}/torchserve:latest
+          docker tag $web_backend:latest ghcr.io/${REPO_NAME}/web_backend:latest
+          docker tag $web_frontend:latest ghcr.io/${REPO_NAME}/web_frontend:latest
+          docker tag $data_processing:latest ghcr.io/${REPO_NAME}/data_processing:latest
 
       - name: Push Docker Images
         run: |
