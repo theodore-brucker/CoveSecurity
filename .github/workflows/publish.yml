@@ -30,10 +30,10 @@ jobs:
       - name: Build and Tag Docker Images
         run: |
           docker-compose -f Docker/docker-compose.yml build torchserve web_backend web_frontend data_processing
-          docker tag Docker_torchserve ghcr.io/${{ github.repository }}/torchserve:latest
-          docker tag Docker_web_backend ghcr.io/${{ github.repository }}/web_backend:latest
-          docker tag Docker_web_frontend ghcr.io/${{ github.repository }}/web_frontend:latest
-          docker tag Docker_data_processing ghcr.io/${{ github.repository }}/data_processing:latest
+          docker tag torchserve ghcr.io/${{ github.repository }}/torchserve:latest
+          docker tag web_backend ghcr.io/${{ github.repository }}/web_backend:latest
+          docker tag web_frontend ghcr.io/${{ github.repository }}/web_frontend:latest
+          docker tag data_processing ghcr.io/${{ github.repository }}/data_processing:latest
 
       - name: Push Docker Images
         run: |
@@ -45,4 +45,3 @@ jobs:
 
         env:
           DOCKER_BUILDKIT: 1
-
