@@ -33,10 +33,10 @@ jobs:
           docker-compose -f Docker/docker-compose.yml build torchserve web_backend web_frontend data_processing
           
           # Use the correct naming convention
-          docker tag ghcr.io/theodore-brucker/covesecurity/torchserve:latest ghcr.io/covesecurity/torchserve:latest
-          docker tag ghcr.io/theodore-brucker/covesecurity/web_backend:latest ghcr.io/covesecurity/web_backend:latest
-          docker tag ghcr.io/theodore-brucker/covesecurity/web_frontend:latest ghcr.io/covesecurity/web_frontend:latest
-          docker tag ghcr.io/theodore-brucker/covesecurity/data_processing:latest ghcr.io/covesecurity/data_processing:latest
+          docker tag torchserve:latest ghcr.io/covesecurity/torchserve:latest
+          docker tag web_backend:latest ghcr.io/covesecurity/web_backend:latest
+          docker tag web_frontend:latest ghcr.io/covesecurity/web_frontend:latest
+          docker tag data_processing:latest ghcr.io/covesecurity/data_processing:latest
 
       - name: Push Docker Images
         run: |
