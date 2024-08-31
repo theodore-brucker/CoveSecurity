@@ -30,7 +30,18 @@ jobs:
       - name: Build and Tag Docker Images
         run: |
           REPO_NAME=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          docker-compose -f Docker/docker-compose.yml build --no-cache torchserve web_backend web_frontend data_processing
+          # Build the torchserve image
+          docker build -t torchserve:latest -f Docker/Dockerfile.torchserve .
+
+          # Build the web_backend image
+          docker build -t web_backend:latest -f Docker/Dockerfile.web_backend .
+      
+          # Build the web_frontend image
+          docker build -t web_frontend:latest -f Docker/Dockerfile.web_frontend .
+      
+          # Build the data_processing image
+          docker build -t data_processing:latest -f Docker/Dockerfile.data_processing .
+      
           docker images
 
           # Use the correct naming convention
