@@ -27,33 +27,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install docker-compose -y
 
-      - name: Build Docker Images
-        run: |
-          docker-compose -f Docker/docker-compose.yml build torchserve web_backend web_frontend data_processing
-
-      - name: List Docker Images
-        run: docker images
-
-      - name: Capture and Tag Docker Images
+      - name: Build and Tag Docker Images
         run: |
           REPO_NAME=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-
-          # Capture the actual image names
-          DOCKER_TORCHSERVE=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep -E "${REPO_NAME}.*torchserve" | head -n 1)
-          DOCKER_WEB_BACKEND=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep -E "${REPO_NAME}.*web_backend" | head -n 1)
-          DOCKER_WEB_FRONTEND=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep -E "${REPO_NAME}.*web_frontend" | head -n 1)
-          DOCKER_DATA_PROCESSING=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep -E "${REPO_NAME}.*data_processing" | head -n 1)
-
-          echo "TorchServe image: $DOCKER_TORCHSERVE"
-          echo "Web Backend image: $DOCKER_WEB_BACKEND"
-          echo "Web Frontend image: $DOCKER_WEB_FRONTEND"
-          echo "Data Processing image: $DOCKER_DATA_PROCESSING"
-
-          # Tag the images correctly
-          docker tag $DOCKER_TORCHSERVE ghcr.io/${REPO_NAME}/torchserve:latest
-          docker tag $DOCKER_WEB_BACKEND ghcr.io/${REPO_NAME}/web_backend:latest
-          docker tag $DOCKER_WEB_FRONTEND ghcr.io/${REPO_NAME}/web_frontend:latest
-          docker tag $DOCKER_DATA_PROCESSING ghcr.io/${REPO_NAME}/data_processing:latest
+          docker-compose -f Docker/docker-compose.yml build torchserve web_backend web_frontend data_processing
+          
+          # Use the correct naming convention
+          docker tag ${REPO_NAME}_torchserve:latest ghcr.io/${REPO_NAME}/torchserve:latest
+          docker tag ${REPO_NAME}_web_backend:latest ghcr.io/${REPO_NAME}/web_backend:latest
+          docker tag ${REPO_NAME}_web_frontend:latest ghcr.io/${REPO_NAME}/web_frontend:latest
+          docker tag ${REPO_NAME}_data_processing:latest ghcr.io/${REPO_NAME}/data_processing:latest
 
       - name: Push Docker Images
         run: |
