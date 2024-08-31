@@ -14,7 +14,7 @@ Install Docker Compose as it is required to orchestrate the containers.
 
 ## Download and Launch
 
-First, clone the repository to your local machine:
+First, clone the repository to your local machine:  
 ```git clone https://github.com/theodore-brucker/CoveSecurity.git```  
 ```cd CoveSecurity/Docker/```   
 ```docker-compose up```  
