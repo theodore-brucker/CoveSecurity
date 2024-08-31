@@ -31,6 +31,7 @@ jobs:
         run: |
           REPO_NAME=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           docker-compose -f Docker/docker-compose.yml build torchserve web_backend web_frontend data_processing
+          docker images
           
           # Use the correct naming convention
           docker tag torchserve:latest ghcr.io/covesecurity/torchserve:latest
