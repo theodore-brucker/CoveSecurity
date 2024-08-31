@@ -33,18 +33,18 @@ jobs:
           docker-compose -f Docker/docker-compose.yml build torchserve web_backend web_frontend data_processing
           
           # Use the correct naming convention
-          docker tag $torchserve ghcr.io/${REPO_NAME}/torchserve:latest
-          docker tag $web_backend ghcr.io/${REPO_NAME}/web_backend:latest
-          docker tag $web_frontend ghcr.io/${REPO_NAME}/web_frontend:latest
-          docker tag $data_processing ghcr.io/${REPO_NAME}/data_processing:latest
+          docker tag ghcr.io/theodore-brucker/covesecurity/torchserve:latest ghcr.io/covesecurity/torchserve:latest
+          docker tag ghcr.io/theodore-brucker/covesecurity/web_backend:latest ghcr.io/covesecurity/web_backend:latest
+          docker tag ghcr.io/theodore-brucker/covesecurity/web_frontend:latest ghcr.io/covesecurity/web_frontend:latest
+          docker tag ghcr.io/theodore-brucker/covesecurity/data_processing:latest ghcr.io/covesecurity/data_processing:latest
 
       - name: Push Docker Images
         run: |
           REPO_NAME=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          docker push ghcr.io/${REPO_NAME}/torchserve:latest
-          docker push ghcr.io/${REPO_NAME}/web_backend:latest
-          docker push ghcr.io/${REPO_NAME}/web_frontend:latest
-          docker push ghcr.io/${REPO_NAME}/data_processing:latest
+          docker push ghcr.io/covesecurity/torchserve:latest
+          docker push ghcr.io/covesecurity/web_backend:latest
+          docker push ghcr.io/covesecurity/web_frontend:latest
+          docker push ghcr.io/covesecurity/data_processing:latest
 
         env:
           DOCKER_BUILDKIT: 1
