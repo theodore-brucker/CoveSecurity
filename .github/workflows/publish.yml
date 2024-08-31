@@ -26,12 +26,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install docker-compose -y
+            - name: Debug - List Directory Contents
+      - name: Debug - list directory contents
+        run: |
+          echo "Listing contents of Docker/model_store/"
+          ls -R Docker/model_store/
 
       - name: Build and Tag Docker Images
         run: |
           REPO_NAME=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           # Build the torchserve image (assuming Dockerfile is in model_store)
-          docker build -t torchserve:latest -f Docker/model_store/Dockerfile .
+          docker build -t torchserve:latest -f Docker/model_store/
 
           # Build the web_backend image
           docker build -t web_backend:latest -f Docker/web/backend/Dockerfile .
