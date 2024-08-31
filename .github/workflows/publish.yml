@@ -31,15 +31,14 @@ jobs:
         run: |
           REPO_NAME=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           docker-compose -f Docker/docker-compose.yml build torchserve web_backend web_frontend data_processing
-          docker tag torchserve ghcr.io/${REPO_NAME}/torchserve:latest
-          docker tag web_backend ghcr.io/${REPO_NAME}/web_backend:latest
-          docker tag web_frontend ghcr.io/${REPO_NAME}/web_frontend:latest
-          docker tag data_processing ghcr.io/${REPO_NAME}/data_processing:latest
+          docker tag docker_torchserve ghcr.io/${REPO_NAME}/torchserve:latest
+          docker tag docker_web_backend ghcr.io/${REPO_NAME}/web_backend:latest
+          docker tag docker_web_frontend ghcr.io/${REPO_NAME}/web_frontend:latest
+          docker tag docker_data_processing ghcr.io/${REPO_NAME}/data_processing:latest
 
       - name: Push Docker Images
         run: |
           REPO_NAME=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          docker-compose -f Docker/docker-compose.yml push torchserve web_backend web_frontend data_processing
           docker push ghcr.io/${REPO_NAME}/torchserve:latest
           docker push ghcr.io/${REPO_NAME}/web_backend:latest
           docker push ghcr.io/${REPO_NAME}/web_frontend:latest
