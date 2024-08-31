@@ -16,16 +16,11 @@ COPY . /app
 
 # Install Python dependencies from requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
-# Install additional Python packages
-RUN pip install netifaces kafka-python
 
 # Log message (for debugging)
 RUN echo "Exposing port 5001"
 # Expose port 5001 for the application
 EXPOSE 5001
-
-# Log message (for debugging)
-RUN echo "Running main.py"
 
 # Set the command to run when the container starts
 CMD ["python", "main.py"]
