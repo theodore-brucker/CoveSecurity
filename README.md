@@ -1,35 +1,30 @@
 # Cove Security
 
 ## Mission Statement
-My mission is to bring power back to the average person on the internet.
+My mission is to push the boundary of free intrusion detection tools  
+[Learn More](https://cove-security.com)
 
 ## Description
 By consuming only header level packet information Cove Security is able to detect attacks that are currently undetected by traditional rule based systems at a fraction of the compute cost
 
 ## Prerequisites
-
 ### Docker and Docker Compose
-Install Docker following the official Docker installation guide for your operating system.  
-Install Docker Compose as it is required to orchestrate the containers.
+Ensure [Docker Desktop](https://docs.docker.com/desktop/install/windows-install/) is installed. They have good documentation at the link.
 
-## Download and Launch
+## Quick Start
+1. Clone the repository:  
+```git clone https://github.com/theodore-brucker/CoveSecurity.git```  
+```cd CoveSecurity/Docker/```  
 
-First, clone the repository to your local machine:
-```
-https://github.com/theodore-brucker/CoveSecurity.git
-```
+2. Start the services:  
+```docker-compose up```  
 
-``` cd CoveSecurity/Docker/```  
-``` docker-compose up```
+3. Access the dashboard:  
+Dashboard UI: http://localhost:3000
 
-Docker Compose will automatically pull the necessary Docker images from the GitHub Container Registry and start all the services.
-
-#### User Interfaces
-The main dashboard will start on  
-``` http://localhost:3000 ```
-
-The database dashboard will start on  
-``` http://localhost:28081 ```
+1. Forward Windows Web Traffic to WSL:  
+Open admin PowerShell session and cd to the clone of the repo, then run:  
+```powershell -ExecutionPolicy Bypass -File .\forward_ports.ps1```
 
 #### Extra commands
 To stop the services gracefully  
@@ -55,7 +50,8 @@ Docker Engine Version: 27.0.3
 Docker Compose Version: v2.28.1
 
 #### Docker Startup Issues  
-If any service fails to start, check the service dependencies and ensure that the required environment variables are correctly configured. The logs in the terminal will show what is wrong.
+If any service fails to start, check the service dependencies and ensure that the required environment variables are correctly configured.  
+**The logs in the terminal will be your best friend**
 
 #### Data Persistence
 MongoDB: By default, MongoDB data is persisted using a Docker volume. If you want to start with a fresh database on every restart, comment out the 2 lines in the docker-compose.yml file for the mongodb_data volume.
