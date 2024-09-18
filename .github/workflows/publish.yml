@@ -40,7 +40,7 @@ jobs:
       - name: Build and push torchserve image
         uses: docker/build-push-action@v4
         with:
-          context: .
+          context: Docker/model_store/
           file: Docker/model_store/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ env.TORCHSERVE_IMAGE }}
@@ -48,7 +48,7 @@ jobs:
       - name: Build and push web_backend image
         uses: docker/build-push-action@v4
         with:
-          context: .
+          context: Docker/web/backend/
           file: Docker/web/backend/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ env.WEB_BACKEND_IMAGE }}
@@ -56,7 +56,7 @@ jobs:
       - name: Build and push web_frontend image
         uses: docker/build-push-action@v4
         with:
-          context: .
+          context: Docker/web/frontend
           file: Docker/web/frontend/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ env.WEB_FRONTEND_IMAGE }}
@@ -64,10 +64,11 @@ jobs:
       - name: Build and push data_processing image
         uses: docker/build-push-action@v4
         with:
-          context: .
+          context: Docker/data_processing/
           file: Docker/data_processing/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ env.DATA_PROCESSING_IMAGE }}
+    
 
       - name: Update docker-compose.yml
         if: github.event_name != 'pull_request'
