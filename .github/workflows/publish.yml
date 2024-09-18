@@ -78,10 +78,10 @@ jobs:
       - name: Update docker-compose.yml
         if: github.event_name != 'pull_request'
         run: |
-          sed -i 's|image: covesecurity/torchserve:latest|image: ${{ env.TORCHSERVE_IMAGE }}|g' docker-compose.yml
-          sed -i 's|image: covesecurity/web_backend:latest|image: ${{ env.WEB_BACKEND_IMAGE }}|g' docker-compose.yml
-          sed -i 's|image: covesecurity/web_frontend:latest|image: ${{ env.WEB_FRONTEND_IMAGE }}|g' docker-compose.yml
-          sed -i 's|image: covesecurity/data_processing:latest|image: ${{ env.DATA_PROCESSING_IMAGE }}|g' docker-compose.yml
+          sed -i 's|image: covesecurity/torchserve:latest|image: ${{ env.TORCHSERVE_IMAGE }}|g' Docker/docker-compose.yml
+          sed -i 's|image: covesecurity/web_backend:latest|image: ${{ env.WEB_BACKEND_IMAGE }}|g' Docker/docker-compose.yml
+          sed -i 's|image: covesecurity/web_frontend:latest|image: ${{ env.WEB_FRONTEND_IMAGE }}|g' Docker/docker-compose.yml
+          sed -i 's|image: covesecurity/data_processing:latest|image: ${{ env.DATA_PROCESSING_IMAGE }}|g' Docker/docker-compose.yml
 
       - name: Commit and push updated docker-compose.yml
         if: github.event_name != 'pull_request'
