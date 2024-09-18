@@ -88,6 +88,6 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add docker-compose.yml
+          git add Docker/docker-compose.yml
           git commit -m "Update docker-compose.yml with latest image tags" || echo "No changes to commit"
           git push
