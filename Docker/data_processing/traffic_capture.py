@@ -249,11 +249,9 @@ def produce_raw_data(feature_sequences, human_readable_sequences, is_training=Fa
                 "human_readable": human_readable_sequence,
                 "is_anomaly": False,  # This will be updated later by the model
                 "is_training": is_training,
-                "is_false_positive": None,  # This will be updated based on user feedback
+                "is_false_positive": False,  # Default value, this will be updated later
                 "reconstruction_error": None  # This will be updated by the model
             }
-            
-            logging.debug(f"Serializing sequence {idx}")
             
             producer.produce(
                 RAW_TOPIC,

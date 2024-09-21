@@ -75,7 +75,11 @@ services:
   # Primary component for serving and training models
   # Class: High
   torchserve:
-    image: ghcr.io/theodore-brucker/covesecurity/torchserve:latest
+    # image pulls from GHCR, build for testing local development changes
+    # image: ghcr.io/theodore-brucker/covesecurity/torchserve:latest
+    build: 
+      context: ./model_store
+      dockerfile: Dockerfile
     ports:
       - "8080:8080"
       - "8081:8081"
@@ -94,7 +98,10 @@ services:
   # Primary interface for user interacting with the system
   # Class: Critical
   web_backend:
-    image: ghcr.io/theodore-brucker/covesecurity/web_backend:latest
+    #image: ghcr.io/theodore-brucker/covesecurity/web_backend:latest
+    build:
+      context: ./web/backend
+      dockerfile: Dockerfile
     volumes:
       - ./web/backend:/app
       - training_data:/app/training_data
@@ -111,7 +118,7 @@ services:
       # Networking variables
       - MAX_RETRIES=5
       - RETRY_DELAY=2
-      - DATA_PROCESSING_URL=http://172.17.0.1:5001
+      - DATA_PROCESSING_URL=http://data_processing:5001
       - MONGO_URI=mongodb://mongodb:27017/
     ports:
       - "5000:5000"
@@ -128,7 +135,10 @@ services:
   # Frontend for the web interface
   # Class: High
   web_frontend:
-    image: ghcr.io/theodore-brucker/covesecurity/web_frontend:latest
+    #image: ghcr.io/theodore-brucker/covesecurity/web_frontend:latest
+    build:
+      context: ./web/frontend
+      dockerfile: Dockerfile
     environment:
       - REACT_APP_BACKEND_URL=http://web_backend:5000
     volumes:
@@ -141,45 +151,48 @@ services:
   # Collects data from the network interface, processes it, and pushes it to Kafka
   # Class: High
   data_processing:
-    image: ghcr.io/theodore-brucker/covesecurity/data_processing:latest
-    network_mode: host
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
+    #image: ghcr.io/theodore-brucker/covesecurity/data_processing:latest
+    build:
+      context: ./data_processing
+      dockerfile: Dockerfile
     volumes:
       - training_data:/app/training_data
     environment:
-
-    # Environment variables for Kakfa
-      - KAFKA_BROKER=localhost:29092
+      - KAFKA_BROKER=kafka:9092
       - RAW_TOPIC=raw_data
       - PROCESSED_TOPIC=processed_data
       - PREDICTIONS_TOPIC=predictions
       - TRAINING_TOPIC=training_data
       - CAPTURE_INTERFACE=eth0
-
-    # Environment variables for TorchServe
-      - TORCHSERVE_REQUESTS=http://localhost:8080
-      - TORCHSERVE_MANAGEMENT=http://localhost:8081
-      - TORCHSERVE_METRICS=http://localhost:8082
+      - TORCHSERVE_REQUESTS=http://torchserve:8080
+      - TORCHSERVE_MANAGEMENT=http://torchserve:8081
+      - TORCHSERVE_METRICS=http://torchserve:8082
       - ANOMALY_THRESHOLD=.5
-      - training_data:/app/training_data
       - SEQUENCE_LENGTH=16
       - FEATURE_COUNT=12
       - MODEL_NAME=transformer_autoencoder
-
-    # Networking variables
-      - WEB_BACKEND_URL=http://localhost:5000
+      - WEB_BACKEND_URL=http://web_backend:5000
       - MONGO_URI=mongodb://mongodb:27017/
       - FLASK_PORT=5001
-
     depends_on:
       - kafka
       - torchserve
       - web_backend
       - mongodb
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    networks:
+      - kafka_network
+
+  traffic_generator:
+    build:
+      context: ./traffic_gen
+      dockerfile: Dockerfile
+    environment:
+      - TARGET_IP=data_processing
+      - TARGET_PORT=5001
+    depends_on:
+      - data_processing
+    networks:
+      - kafka_network
 
   # Stores data for the system
   # Class: Low
@@ -265,7 +278,7 @@ services:
 
 networks:
   kafka_network:
-    driver: bridge
+    name: docker_kafka_network
 
 volumes:
   training_data:

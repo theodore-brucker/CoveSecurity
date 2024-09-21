@@ -95,11 +95,11 @@ def process_raw_data():
                 "_id": _id,  # Include the _id from the raw data
                 "timestamp": datetime.now(),
                 "sequence": sequence,
-                "is_training": is_training,
                 "human_readable": human_readable_list,
                 "is_anomaly": False,  # Default value, will be updated later
-                "reconstruction_error": None,  # Will be updated by the model
-                "is_false_positive": None  # This field is not in the schema, consider removing or adding to schema
+                "is_training": is_training,
+                "is_false_positive": False, # Default value, will be updated later
+                "reconstruction_error": None  # Will be updated by the model
             }
 
             logging.debug(f"Producing processed data: {processed_value}")
@@ -420,14 +420,9 @@ def prediction_thread():
                         "human_readable": value.get('human_readable', []),
                         "is_anomaly": is_anomaly,
                         "is_training": value['is_training'],
-                        "reconstruction_error": reconstruction_error,
-                        "is_false_positive": None  # This field is not in the schema, consider removing or adding to schema
+                        "is_false_positive": False, # Default value, this will be updated later
+                        "reconstruction_error": reconstruction_error
                     }
-                    logging.debug(f'Producing prediction for sequence {_id}: is_anomaly = {is_anomaly}, reconstruction_error = {reconstruction_error}')
-                    
-                    logging.debug(f"Producing processed data to topic '{PREDICTIONS_TOPIC}':")
-                    logging.debug(f"Key: {_id}")
-                    logging.debug(f"Value: {json.dumps(output, indent=2, cls=CustomEncoder)}")
 
                     producer.produce(
                         PREDICTIONS_TOPIC, 

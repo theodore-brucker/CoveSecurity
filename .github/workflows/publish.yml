@@ -48,6 +48,7 @@ jobs:
           context: Docker/model_store/
           file: Docker/model_store/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
+          # Expected environment variable from GitHub Actions
           tags: ${{ env.TORCHSERVE_IMAGE }}
 
       - name: Build and push web_backend image
@@ -56,6 +57,7 @@ jobs:
           context: Docker/web/backend/
           file: Docker/web/backend/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
+          # Expected environment variable from GitHub Actions
           tags: ${{ env.WEB_BACKEND_IMAGE }}
 
       - name: Build and push web_frontend image
@@ -64,6 +66,7 @@ jobs:
           context: Docker/web/frontend
           file: Docker/web/frontend/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
+          # Expected environment variable from GitHub Actions
           tags: ${{ env.WEB_FRONTEND_IMAGE }}
 
       - name: Build and push data_processing image
@@ -72,6 +75,7 @@ jobs:
           context: Docker/data_processing/
           file: Docker/data_processing/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
+          # Expected environment variable from GitHub Actions
           tags: ${{ env.DATA_PROCESSING_IMAGE }}
     
 
