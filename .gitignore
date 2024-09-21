@@ -104,6 +104,6 @@ media/
 # Ignore backend temporary and uploaded files
 tmp/
 uploads/
-
+Docker/model_store/checkpoints
 # Ignore Jupyter Notebooks
 *.ipynb
