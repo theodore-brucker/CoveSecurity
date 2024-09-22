@@ -86,7 +86,7 @@ services:
       - "8082:8082"
     environment:
       - EARLY_STOPPING_THRESHOLD=.001
-      - NUM_EPOCHS=25
+      - NUM_EPOCHS=5
       - SEQUENCE_LENGTH=16
       - FEATURE_COUNT=12
       - MODEL_STORE_PATH=/home/model-server/model-store/

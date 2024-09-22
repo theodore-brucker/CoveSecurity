@@ -13,6 +13,8 @@ from utils import CustomEncoder
 from status_utils import update_training_status
 from kafka_utils import initialize_kafka_managers
 from processing_utils import process_packet
+from HLL import HyperLogLog
+from ipaddress import ip_address
 
 SEQUENCE_LENGTH = int(os.getenv('SEQUENCE_LENGTH', 16))
 FEATURE_COUNT = int(os.getenv('FEATURE_COUNT', 12))
@@ -57,53 +59,101 @@ class PacketSequenceBuffer:
         self.timestamp_buffer = []
         self.global_scaler = GlobalScaler(feature_dim)
         self.current_index = 0
+        self.seen_ip_pairs = set()
+        self.training_ip_pairs = set()
 
-    def add_packet(self, packet_features, human_readable, timestamp):
+    def _hash_ip_pair(self, src_ip, dst_ip):
+        # Generate a tuple from the IP addresses
+        ip_tuple = (ip_address(src_ip), ip_address(dst_ip))
+        return ip_tuple
+
+    def add_packet(self, packet_features, human_readable, timestamp, is_training=False):
         if len(packet_features) != self.feature_dim:
             logging.warning(f"Packet features length mismatch. Expected {self.feature_dim}, got {len(packet_features)}")
-            return None, None
+            return None, None, None
+
+        # Check if current_index exceeds the sequence_length
+        if self.current_index >= self.sequence_length:
+            logging.error(f"Current index {self.current_index} exceeds sequence length {self.sequence_length}. Resetting to 0.")
+            self.current_index = 0  # Reset index to avoid out-of-bounds error
 
         self.feature_buffer[self.current_index] = packet_features
         self.human_readable_buffer.append(human_readable)
         self.timestamp_buffer.append(timestamp)
+
+        # Update seen IP pairs
+        ip_pair = self._hash_ip_pair(human_readable['src_ip'], human_readable['dst_ip'])
+        self.seen_ip_pairs.add(ip_pair)
+        if is_training:
+            self.training_ip_pairs.add(ip_pair)
+
         self.current_index += 1
 
         if self.current_index == self.sequence_length:
             # Calculate average inter-packet time
             inter_packet_times = np.diff(self.timestamp_buffer)
-            
-            # Convert numpy.int64 to float64 before calculating mean
             inter_packet_times = inter_packet_times.astype(np.float64)
             avg_inter_packet_time = np.mean(inter_packet_times)
             
-            # Normalize the average inter-packet time (example normalization, adjust as needed)
-            normalized_avg_time = (np.log1p(avg_inter_packet_time) / np.log1p(1)) * 2 - 1  # Assuming 1 second as max
+            # Normalize the average inter-packet time
+            normalized_avg_time = (np.log1p(avg_inter_packet_time) / np.log1p(1)) * 2 - 1
             
             # Replace the 4th feature (index 3) with the new inter-packet time feature
             self.feature_buffer[:, 3] = normalized_avg_time
 
             scaled_sequence = self.global_scaler.transform(self.feature_buffer)
             
-            # Add debugging information here
+            # Calculate familiarity score
+            familiarity_score = self.calculate_familiarity()
+
+            # Logging for debugging
             logging.debug("Scaled sequence statistics:")
             for i in range(self.feature_dim):
                 feature_column = scaled_sequence[:, i]
                 logging.debug(f"Feature {i}: min={feature_column.min():.4f}, max={feature_column.max():.4f}, "
-                              f"mean={feature_column.mean():.4f}, std={feature_column.std():.4f}")
-            
-            # Additional overall statistics
+                            f"mean={feature_column.mean():.4f}, std={feature_column.std():.4f}")
             logging.debug(f"Overall: min={scaled_sequence.min():.4f}, max={scaled_sequence.max():.4f}, "
-                          f"mean={scaled_sequence.mean():.4f}, std={scaled_sequence.std():.4f}")
+                        f"mean={scaled_sequence.mean():.4f}, std={scaled_sequence.std():.4f}")
+            logging.debug(f"Familiarity score: {familiarity_score:.4f}")
+
+            # Debugging: Print the currently seen IP combinations
+            logging.debug(f"Seen IP combinations in current sequence: {self.seen_ip_pairs}")
+            if is_training:
+                logging.debug(f"Training IP combinations: {self.training_ip_pairs}")
 
             human_readable_sequence = self.human_readable_buffer.copy()
             for hr in human_readable_sequence:
-                hr['avg_inter_packet_time'] = float(avg_inter_packet_time)  # Convert to float
+                hr['avg_inter_packet_time'] = float(avg_inter_packet_time)
 
+            human_readable_sequence = self.human_readable_buffer.copy()
+            for hr in human_readable_sequence:
+                hr['avg_inter_packet_time'] = float(avg_inter_packet_time)
+
+            # Reset buffers after processing the sequence
             self.current_index = 0
             self.human_readable_buffer.clear()
             self.timestamp_buffer.clear()
-            return scaled_sequence.tolist(), human_readable_sequence
-        return None, None
+            return scaled_sequence.tolist(), human_readable_sequence, familiarity_score
+        
+        return None, None, None
+
+    def calculate_familiarity(self):
+        if not self.training_ip_pairs:
+            return 0.0  # If no training data, everything is unfamiliar
+
+        # Calculate how many of the current sequence's IP pairs have been seen in training
+        seen_in_training = sum(1 for ip_pair in self.seen_ip_pairs if ip_pair in self.training_ip_pairs)
+        logging.info(f'{seen_in_training}/')
+
+        # Familiarity score is the fraction of IP pairs in the sequence that have been seen in training
+        total_pairs = len(self.seen_ip_pairs)
+        if total_pairs == 0:
+            return 0.0
+
+        familiarity_score = seen_in_training / total_pairs
+
+        # Invert the familiarity score so that 1.0 means very unfamiliar
+        return 1.0 - familiarity_score
 
 def safe_convert(value):
     if isinstance(value, (int, float)):
@@ -206,10 +256,10 @@ def capture_live_traffic(interface):
                 logging.debug(f"[TrafficCaptureThread] Packet summary: {packet.summary()}")
                 features, human_readable, timestamp = process_packet(packet)
                 if features is not None and len(features) == FEATURE_COUNT:
-                    feature_sequence, human_readable_sequence = packet_buffer.add_packet(features, human_readable, timestamp)
+                    is_training = is_training_period and datetime.now(timezone.utc) <= training_end_time
+                    feature_sequence, human_readable_sequence, familiarity_score = packet_buffer.add_packet(features, human_readable, timestamp, is_training)
                     if feature_sequence is not None:
-                        is_training = is_training_period and datetime.now(timezone.utc) <= training_end_time
-                        produce_raw_data([feature_sequence], [human_readable_sequence], is_training)
+                        produce_raw_data([feature_sequence], [human_readable_sequence], is_training, familiarity_score)
                 else:
                     logging.warning(f"[TrafficCaptureThread] Invalid features: {features}")
                 reset_counter += 1
@@ -234,7 +284,7 @@ def numpy_to_python(obj):
         return obj.tolist()
     return obj
 
-def produce_raw_data(feature_sequences, human_readable_sequences, is_training=False):
+def produce_raw_data(feature_sequences, human_readable_sequences, is_training=False, familiarity_score=None):
     producer = producer_manager.get_producer(RAW_TOPIC)
     logging.debug(f'Attempting to produce {len(feature_sequences)} raw sequences')
     valid_sequences = 0
@@ -250,7 +300,8 @@ def produce_raw_data(feature_sequences, human_readable_sequences, is_training=Fa
                 "is_anomaly": False,  # This will be updated later by the model
                 "is_training": is_training,
                 "is_false_positive": False,  # Default value, this will be updated later
-                "reconstruction_error": None  # This will be updated by the model
+                "reconstruction_error": None,  # This will be updated by the model
+                "familiarity": familiarity_score
             }
             
             producer.produce(

@@ -435,7 +435,8 @@ def mark_as_normal():
         "human_readable": sequence.get('human_readable'),
         "is_anomaly": False,
         "reconstruction_error": sequence.get('reconstruction_error'),
-        "is_false_positive": True
+        "is_false_positive": True,
+        "familiarity": sequence.get('familiarity')
     }
     
     try:
@@ -611,7 +612,8 @@ def get_anomaly_numbers():
             'timestamp': prediction.get('timestamp', datetime.now().isoformat()),
             'sequence': prediction.get('sequence', []),
             'reconstruction_error': prediction.get('reconstruction_error', 0),
-            'human_readable': prediction.get('human_readable', {})
+            'human_readable': prediction.get('human_readable', {}),
+            'familiarity': prediction.get('familiarity', 0)  
         }
         if new_anomaly not in false_positive_sequences:
             anomalous_sequences.append(new_anomaly)
