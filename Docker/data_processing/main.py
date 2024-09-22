@@ -83,6 +83,7 @@ def process_raw_data():
             is_training = value['is_training']
             sequence = value['sequence']
             human_readable_list = value['human_readable']
+            familiarity = value['familiarity']
 
             if not isinstance(sequence, list) or len(sequence) != SEQUENCE_LENGTH:
                 logging.error(f"Invalid sequence structure or length in message: {value}")
@@ -99,7 +100,8 @@ def process_raw_data():
                 "is_anomaly": False,  # Default value, will be updated later
                 "is_training": is_training,
                 "is_false_positive": False, # Default value, will be updated later
-                "reconstruction_error": None  # Will be updated by the model
+                "reconstruction_error": None,  # Will be updated by the model
+                "familiarity": familiarity
             }
 
             logging.debug(f"Producing processed data: {processed_value}")
@@ -421,7 +423,8 @@ def prediction_thread():
                         "is_anomaly": is_anomaly,
                         "is_training": value['is_training'],
                         "is_false_positive": False, # Default value, this will be updated later
-                        "reconstruction_error": reconstruction_error
+                        "reconstruction_error": reconstruction_error,
+                        "familiarity": value['familiarity']
                     }
 
                     producer.produce(

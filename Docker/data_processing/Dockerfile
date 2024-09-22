@@ -1,13 +1,20 @@
 # Use Python 3.8 slim image as the base
 FROM python:3.8-slim
+
 # Set environment variable to avoid prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Set the working directory in the container
 WORKDIR /app
 
-# Update package lists and clean up to reduce image size
+# Install necessary build tools and clean up to reduce image size
 RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        gcc \
+        libc-dev \
+        libffi-dev \
+        libssl-dev \
+        build-essential && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -24,4 +31,3 @@ EXPOSE 5001
 
 # Set the command to run when the container starts
 CMD ["python", "main.py"]
-
