@@ -50,6 +50,7 @@ const AnomalousSequencesCard = () => {
   const columns = [
     { header: 'ID', accessor: item => item._id },
     { header: 'Reconstruction Error', accessor: item => item.reconstruction_error ? item.reconstruction_error.toFixed(4) : 'N/A' },
+    { header: 'Familiarity', accessor: item => item.familiarity !== undefined ? item.familiarity.toFixed(4) : 'N/A' },
     { 
       header: 'Actions', 
       accessor: item => (
