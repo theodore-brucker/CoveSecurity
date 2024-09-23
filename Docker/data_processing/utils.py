@@ -3,7 +3,7 @@ import logging
 import numpy as np
 from decimal import Decimal
 from scapy.fields import EDecimal
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 class CustomEncoder(json.JSONEncoder):
@@ -20,7 +20,8 @@ class CustomEncoder(json.JSONEncoder):
             elif isinstance(obj, (np.integer, np.floating)):
                 return obj.item()
             elif isinstance(obj, datetime):
-                return obj.isoformat()
+                # Ensure the datetime is in UTC and formatted as ISO 8601
+                return obj.astimezone(timezone.utc).isoformat()
             elif isinstance(obj, complex):
                 return [obj.real, obj.imag]
             elif isinstance(obj, set):

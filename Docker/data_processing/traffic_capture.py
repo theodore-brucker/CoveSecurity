@@ -293,14 +293,14 @@ def produce_raw_data(feature_sequences, human_readable_sequences, is_training=Fa
         try:
             _id = str(uuid.uuid4())  # Generate a unique ID
             serialized_sequence = { 
-                "_id": _id,  # Include the ID in the message
-                "timestamp": datetime.now(),  # Use datetime object directly
+                "_id": _id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),  # ISO 8601 formatted string
                 "sequence": feature_sequence,
                 "human_readable": human_readable_sequence,
-                "is_anomaly": False,  # This will be updated later by the model
+                "is_anomaly": False,
                 "is_training": is_training,
-                "is_false_positive": False,  # Default value, this will be updated later
-                "reconstruction_error": None,  # This will be updated by the model
+                "is_false_positive": False,
+                "reconstruction_error": None,
                 "familiarity": familiarity_score
             }
             

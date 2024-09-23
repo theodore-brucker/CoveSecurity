@@ -94,7 +94,7 @@ def process_raw_data():
 
             processed_value = {
                 "_id": _id,  # Include the _id from the raw data
-                "timestamp": datetime.now(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),  # ISO 8601 formatted string
                 "sequence": sequence,
                 "human_readable": human_readable_list,
                 "is_anomaly": False,  # Default value, will be updated later
@@ -417,7 +417,7 @@ def prediction_thread():
                     is_anomaly = reconstruction_error >= float(ANOMALY_THRESHOLD)
                     output = {
                         "_id": _id,  # Include the _id in the output
-                        "timestamp": datetime.now(),  # Use current UTC time
+                        "timestamp": datetime.now(timezone.utc).isoformat(),  # ISO 8601 formatted string
                         "sequence": value['sequence'],
                         "human_readable": value.get('human_readable', []),
                         "is_anomaly": is_anomaly,
