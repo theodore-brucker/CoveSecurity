@@ -386,7 +386,7 @@ def prediction_thread():
 
             try:
                 value = json.loads(msg.value().decode('utf-8'))
-                logging.info(f"Processing message: {value['_id']}")
+                logging.debug(f"Processing message: {value['_id']}")
                 
                 # Check for required fields
                 required_fields = ['_id', 'sequence', 'timestamp', 'is_training']
@@ -495,7 +495,7 @@ def check_model_availability():
             logging.warning(f"Model worker is not in READY state. Current state: {worker_status}")
             return False
         
-        logging.info("Model is available and ready")
+        logging.debug("Model is available and ready")
         return True
     except requests.exceptions.RequestException as e:
         logging.error(f"Error checking model availability: {e}")
