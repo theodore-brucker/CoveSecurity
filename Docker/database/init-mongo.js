@@ -49,7 +49,7 @@ db.createCollection('sequences', {
       }
     }
   },
-  validationLevel: "warn"
+  validationLevel: "moderate"
 });
 
 db.sequences.createIndex({ timestamp: 1 });

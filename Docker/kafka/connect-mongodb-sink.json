@@ -3,21 +3,21 @@
   "config": {
     "connector.class": "com.mongodb.kafka.connect.MongoSinkConnector",
     "tasks.max": "1",
-    "topics": "processed_data,predictions,training_data,labeled_data",
+    "topics": "predictions,labeled_data",
     "connection.uri": "mongodb://mongodb:27017",
     "database": "network_sequences",
     "collection": "sequences",
     "key.converter": "org.apache.kafka.connect.storage.StringConverter",
     "value.converter": "org.apache.kafka.connect.json.JsonConverter",
     "value.converter.schemas.enable": "false",
-    "document.id.strategy": "com.mongodb.kafka.connect.sink.processor.id.strategy.UuidStrategy",
+    "document.id.strategy": "com.mongodb.kafka.connect.sink.processor.id.strategy.ProvidedInValueStrategy",
+    "document.id.strategy.providedInValue.field": "_id",
+    "writemodel.strategy": "com.mongodb.kafka.connect.sink.writemodel.strategy.ReplaceOneDefaultStrategy",
     "document.id.strategy.overwrite.existing": "true",
-    "writemodel.strategy": "com.mongodb.kafka.connect.sink.writemodel.strategy.UpdateOneDefaultStrategy",
     "delete.on.null.values": false,
     "max.batch.size": "100",
     "errors.tolerance": "all",
     "errors.log.enable": true,
-    "errors.log.include.messages": true,
-    "updateone.business.key": "_id" 
+    "errors.log.include.messages": true
   }
 }

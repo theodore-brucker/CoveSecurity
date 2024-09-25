@@ -247,8 +247,7 @@ def update_training_status(new_status):
 def handle_anomalous_sequences_update(data):
     global anomalous_sequences
     anomalous_sequences.extend(data['sequences'])
-    # Optionally, limit the size of anomalous_sequences to prevent memory issues
-    anomalous_sequences = anomalous_sequences[-1000:]  # Keep only the last 1000 sequences
+    anomalous_sequences = anomalous_sequences[-10000:]  # Keep only the last 1000 sequences
 
 @app.route('/api/anomalous_sequences', methods=['GET'])
 def get_anomalous_sequences():
@@ -440,6 +439,7 @@ def mark_as_normal():
     }
     
     try:
+        # Produce message to Kafka
         producer.produce(
             LABELED_DATA_TOPIC,
             key=str(_id),
@@ -448,10 +448,28 @@ def mark_as_normal():
         )
         producer.flush()
         logging.info(f"Sequence {_id} successfully marked as normal and sent to Kafka topic")
-        return jsonify({"message": "Sequence marked as normal (false positive)"}), 200
+        
+        # Update MongoDB document (treat _id as a string, not an ObjectId)
+        mongo_update = {
+            "$set": {
+                "is_anomaly": False,
+                "is_false_positive": True,
+                "updated_at": datetime.now()
+            }
+        }
+        result = sequences_collection.update_one({"_id": _id}, mongo_update)  # _id as a string
+        
+        if result.matched_count == 0:
+            logging.warning(f"Sequence {_id} not found in MongoDB")
+            return jsonify({"error": "Sequence not found in MongoDB"}), 404
+
+        logging.info(f"Sequence {_id} successfully updated in MongoDB")
+        return jsonify({"message": "Sequence marked as normal (false positive) and updated in MongoDB"}), 200
+
     except Exception as e:
         logging.error(f"Error updating sequence {_id}: {e}")
         return jsonify({"error": "Failed to mark sequence as normal"}), 500
+
 
 @app.route('/train_with_labeled_data', methods=['POST'])
 def train_with_labeled_data():
