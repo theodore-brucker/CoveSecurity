@@ -18,7 +18,8 @@ from flask_socketio import SocketIO
 from werkzeug.utils import secure_filename
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError, ConfigurationError
-from bson import json_util, ObjectId
+from bson import json_util
+from scapy.fields import EDecimal
 
 # ENVIRONMENT VARIABLES
 KAFKA_BROKER = os.getenv('KAFKA_BROKER', 'kafka:9092')
@@ -190,14 +191,25 @@ def delivery_report(err, msg):
     else:
         logging.info(f'Message delivered to {msg.topic()} [{msg.partition()}]')
 
+def update_training_status(new_status):
+    global training_status
+    training_status.update(new_status)
+    logging.info(f"Training status updated: {training_status}")
+    socketio.emit('training_status_update', training_status)
+
+def validate_data_size(data):
+    if len(data['sequence']) != SEQUENCE_LENGTH:
+        logging.error(f"Invalid sequence length: {len(data['sequence'])} != {SEQUENCE_LENGTH}")
+        return False
+    if len(data['sequence'][0]) != FEATURE_COUNT:
+        logging.error(f"Invalid feature count: {len(data['sequence'][0])} != {FEATURE_COUNT}")
+        return False
+    return True
 
 ##########################################
-# FLASK UTILITY
+# FLASK
 ##########################################
 
-
-from scapy.fields import EDecimal
-from datetime import datetime
 class CustomEncoder(json.JSONEncoder):
     def default(self, obj):
         try:
@@ -225,7 +237,7 @@ class CustomEncoder(json.JSONEncoder):
         except Exception as e:
             logging.error(f"Error in CustomEncoder: {e} for object type {type(obj)}", exc_info=True)
             return str(obj)  # Fall back to string representation
-        
+
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
@@ -233,21 +245,25 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 ##########################################
-# HANDLERS
+# ROUTES
 ##########################################
-
-
-def update_training_status(new_status):
-    global training_status
-    training_status.update(new_status)
-    logging.info(f"Training status updated: {training_status}")
-    socketio.emit('training_status_update', training_status)
 
 @socketio.on('anomalous_sequences_update')
 def handle_anomalous_sequences_update(data):
     global anomalous_sequences
     anomalous_sequences.extend(data['sequences'])
     anomalous_sequences = anomalous_sequences[-10000:]  # Keep only the last 1000 sequences
+
+@socketio.on('connect')
+def handle_connect():
+    logging.info("Client connected")
+    socketio.emit('training_status_update', training_status)
+    threading.Thread(target=emit_health_status).start()
+    threading.Thread(target=emit_raw_sample).start()
+    threading.Thread(target=emit_processed_sample).start()
+    threading.Thread(target=emit_anomaly_numbers).start()
+    threading.Thread(target=emit_data_flow_health).start()
+    threading.Thread(target=emit_anomalous_sequences).start()
 
 @app.route('/api/anomalous_sequences', methods=['GET'])
 def get_anomalous_sequences():
@@ -293,24 +309,13 @@ def get_mongodb_data():
         'current_page': page
     })
 
-@socketio.on('connect')
-def handle_connect():
-    logging.info("Client connected")
-    socketio.emit('training_status_update', training_status)
-    threading.Thread(target=emit_health_status).start()
-    threading.Thread(target=emit_raw_sample).start()
-    threading.Thread(target=emit_processed_sample).start()
-    threading.Thread(target=emit_anomaly_numbers).start()
-    threading.Thread(target=emit_data_flow_health).start()
-    threading.Thread(target=emit_anomalous_sequences).start()
-
 @app.route('/training_start', methods=['POST'])
 def start_training():
     try:
         response = requests.post(f'{DATA_PROCESSING_URL}/training_start')
         if response.status_code == 200:
             update_training_status({
-                'status': 'in_progress',
+                'status': 'in progress',
                 'progress': 0,
                 'message': 'Training job started.'
             })
@@ -470,7 +475,6 @@ def mark_as_normal():
         logging.error(f"Error updating sequence {_id}: {e}")
         return jsonify({"error": "Failed to mark sequence as normal"}), 500
 
-
 @app.route('/train_with_labeled_data', methods=['POST'])
 def train_with_labeled_data():
     try:
@@ -533,15 +537,6 @@ def get_data():
 ##########################################
 # GETTERS
 ##########################################
-
-def validate_data_size(data):
-    if len(data['sequence']) != SEQUENCE_LENGTH:
-        logging.error(f"Invalid sequence length: {len(data['sequence'])} != {SEQUENCE_LENGTH}")
-        return False
-    if len(data['sequence'][0]) != FEATURE_COUNT:
-        logging.error(f"Invalid feature count: {len(data['sequence'][0])} != {FEATURE_COUNT}")
-        return False
-    return True
 
 def get_raw_sample():
     global last_raw_data_time

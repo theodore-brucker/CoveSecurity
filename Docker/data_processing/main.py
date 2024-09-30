@@ -136,19 +136,19 @@ def process_raw_data():
 model_ready_event = threading.Event()
 
 def train_model_process():
-    update_training_status("starting", 0, "Initiating model training process")
+    update_training_status("starting", 10, "Initiating model training process")
 
     try:
-        update_training_status("checking_torchserve", 10, "Checking TorchServe availability")
+        update_training_status("checking_torchserve", 20, "Checking TorchServe availability")
         if not check_torchserve_availability():
             update_training_status("error", 0, "TorchServe is not available")
             return
 
-        update_training_status("fetching_data", 20, "Fetching data from Kafka")
+        update_training_status("fetching_data", 40, "Fetching data from Kafka")
         data = fetch_training_data()
-        update_training_status("data_fetched", 40, f"Fetched {len(data)} records from Kafka")
+        update_training_status("data_fetched", 60, f"Fetched {len(data)} records from Kafka")
         time.sleep(5)
-        update_training_status("training", 50, "Training model")
+        update_training_status("training", 80, "Training model")
         if train_and_set_inference_mode(data):
             update_training_status("completed", 100, "Model training completed and set to inference mode")
             threading.Thread(target=prediction_thread).start()

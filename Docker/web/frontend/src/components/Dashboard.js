@@ -108,10 +108,9 @@ const Dashboard = () => {
       const response = await fetch('http://localhost:5000/training_start', {
         method: 'POST',
       });
-
       if (response.ok) {
         const result = await response.json();
-        setTrainingStatus({ status: 'in_progress', progress: 0, message: result.message });
+        setTrainingStatus({ status: 'in progress', progress: 0, message: result.message });
       } else {
         const errorText = await response.text();
         setTrainingStatus({ status: 'error', progress: 0, message: `Error: ${errorText}` });
@@ -289,7 +288,7 @@ const Dashboard = () => {
 
   const renderTrafficRatioChart = () => (
     <div key="trafficRatio" className="dashboard-item">
-        <ResizableCard title="Traffic Ratio">
+        <ResizableCard title="Classifications Ratio">
             <TrafficRatioChart 
                 normal={anomalyNumbers.normal} 
                 anomalous={anomalyNumbers.anomalous} 
@@ -300,7 +299,7 @@ const Dashboard = () => {
 
   const renderAnomalyNumbersCard = () => (
     <div key="anomalyNumbers" className="dashboard-item">
-        <ResizableCard title="Anomaly Numbers">
+        <ResizableCard title="Classifications">
             {anomalyNumbers ? (
                 <div>
                     <p><span className="data-label">Total Predictions:</span> {anomalyNumbers.total}</p>
@@ -308,66 +307,19 @@ const Dashboard = () => {
                     <p><span className="data-label">Anomalous Sequences:</span> {anomalyNumbers.anomalous}</p>
                 </div>
             ) : (
-                <p className="loading">Loading anomaly data...</p>
+                <p className="loading">Loading ...</p>
             )}
         </ResizableCard>
     </div>
 );
 
-
-  const renderRawSampleCard = () => (
-    <div key="rawSample" className="dashboard-item">
-      <ResizableCard title="Raw Data Sample">
-        {rawSample ? (
-          <DataTable
-            data={[rawSample]}
-            columns={[
-              { key: 'src_ip', label: 'Source IP', index: 0, render: (packet, human) => human.src_ip },
-              { key: 'dst_ip', label: 'Destination IP', index: 1, render: (packet, human) => human.dst_ip },
-              { key: 'protocol', label: 'Protocol', index: 5, render: (packet, human) => human.protocol },
-              { key: 'src_port', label: 'Source Port', index: 6, render: (packet, human) => human.src_port },
-              { key: 'dst_port', label: 'Destination Port', index: 7, render: (packet, human) => human.dst_port },
-              { key: 'flags', label: 'Flags', render: (packet, human) => human.flags },
-            ]}
-            isMultiSequence={false}
-          />
-        ) : (
-          <p className="loading">Loading raw data sample...</p>
-        )}
-      </ResizableCard>
-    </div>
-  );
-
-  const renderProcessedSampleCard = () => (
-    <div key="processedSample" className="dashboard-item">
-      <ResizableCard title="Processed Data Sample">
-        {processedSample ? (
-          <DataTable
-            data={[processedSample]}
-            columns={[
-              { key: 'src_ip', label: 'Source IP', index: 0, render: (packet, human) => human.src_ip },
-              { key: 'dst_ip', label: 'Destination IP', index: 1, render: (packet, human) => human.dst_ip },
-              { key: 'protocol', label: 'Protocol', index: 5, render: (packet, human) => human.protocol },
-              { key: 'src_port', label: 'Source Port', index: 6, render: (packet, human) => human.src_port },
-              { key: 'dst_port', label: 'Destination Port', index: 7, render: (packet, human) => human.dst_port },
-              { key: 'flags', label: 'Flags', render: (packet, human) => human.flags },
-            ]}
-            isMultiSequence={false}
-          />
-        ) : (
-          <p className="loading">Loading processed data sample...</p>
-        )}
-      </ResizableCard>
-    </div>
-  );
-
   const renderTrainModelCard = () => (
     <div key="trainModel" className="dashboard-item">
       <ResizableCard title="Model Training">
         <div className="training-tabs">
-          <button className={`tab-button ${activeTab === 'time' ? 'active' : ''}`} onClick={() => setActiveTab('time')}>Time Window</button>
-          <button className={`tab-button ${activeTab === 'pcap' ? 'active' : ''}`} onClick={() => setActiveTab('pcap')}>PCAP File</button>
-          <button className={`tab-button ${activeTab === 'labeled' ? 'active' : ''}`} onClick={() => setActiveTab('labeled')}>Labeled Data</button>
+          <button className={`tab-button ${activeTab === 'time' ? 'active' : ''}`} onClick={() => setActiveTab('time')}>Time</button>
+          <button className={`tab-button ${activeTab === 'pcap' ? 'active' : ''}`} onClick={() => setActiveTab('pcap')}>PCAP</button>
+          <button className={`tab-button ${activeTab === 'labeled' ? 'active' : ''}`} onClick={() => setActiveTab('labeled')}>Labeled</button>
         </div>
         
         <div className="tab-content">
@@ -375,11 +327,11 @@ const Dashboard = () => {
             <div className="time-window-section">
               <div className="date-selection">
                 <label>
-                  Start Date:
+                  Start:
                   <input type="datetime-local" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
                 </label>
                 <label>
-                  End Date:
+                  End:
                   <input type="datetime-local" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
                 </label>
               </div>
@@ -402,7 +354,7 @@ const Dashboard = () => {
           
           {activeTab === 'labeled' && (
             <div className="labeled-data-section">
-              <button className="themed_button" onClick={handleTrainWithLabeledData}>Train with Labeled Data</button>
+              <button className="themed_button" onClick={handleTrainWithLabeledData}>Train on Labeled Data</button>
             </div>
           )}
         </div>
@@ -436,12 +388,6 @@ const Dashboard = () => {
     </div>
   );
 
-  const renderLogoCard = () => (
-    <div key="logoCard" className="dashboard-item logo-card">
-      <img src={logo} alt="Cove Security Logo" className="dashboard-logo" />
-    </div>
-  );
-
   // Main render function
   return (
     <div className="container">
@@ -449,10 +395,10 @@ const Dashboard = () => {
       <h2>Dashboard</h2>
       <div className="dashboard">
         {renderTrainModelCard()}
-        {renderDataFlowHealthCard()}
-        {renderAnomalyNumbersCard()}
         {renderTrafficRatioChart()}
+        {renderAnomalyNumbersCard()}
         <AnomalousSequencesCard />
+        {renderDataFlowHealthCard()}
         <MongoDataCard />
       </div>
     </div>
